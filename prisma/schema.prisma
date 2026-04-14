@@ -439,6 +439,7 @@ model SavedCard {
   brand      String
   last4      String
   expMonth   String
+  authorizationCode: String
   expYear    String
   cardHolder String
   isDefault  Boolean  @default(false)
@@ -779,6 +780,7 @@ model FavoriteProduct {
   id         String   @id @default(uuid())
   userId     String
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendor    VendorProfile @relation(fields: [vendorId], references: [id])
   menuItemId String
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
 

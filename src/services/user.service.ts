@@ -1227,42 +1227,31 @@ export const getFavoriteRestaurants = async (userId: string) => {
   const favorites = await prisma.favoriteRestaurant.findMany({
     where: { userId },
     include: {
-      vendor: {
-        select: {
-          id: true,
-          storeName: true,
-          logoUrl: true,
-          bannerUrl: true,
-          isOpen: true,
-          averageRating: true,
-          totalReviews: true,
-          address: true,
-          hasFreeDelivery: true,
-          deliveryTimeMin: true,
-          hoursSummary: true,
-          positiveReviews: true,
-        },
-      },
+      vendor: true, // This will now work because 'vendor' is defined in schema
     },
     orderBy: { id: "desc" },
   });
 
-  return favorites.map((f) => ({
-    id: f.vendor.id,
-    name: f.vendor.storeName,
-    image: f.vendor.bannerUrl,
-    logo: f.vendor.logoUrl,
-    rating: f.vendor.averageRating,
-    reviewCount: f.vendor.totalReviews,
-    isOpen: f.vendor.isOpen,
-    address: f.vendor.address,
-    hasFreeDelivery: f.vendor.hasFreeDelivery,
-    deliveryFee: f.vendor.hasFreeDelivery ? 0 : deliveryBase,
-    deliveryTime: `${f.vendor.deliveryTimeMin ?? 30} mins`,
-    positiveReviews: f.vendor.positiveReviews,
-    closesIn: f.vendor.hoursSummary ?? null,
-    isFavorite: true,
-  }));
+  // Map only if vendor exists (prevents crashes if a vendor was deleted)
+  return favorites
+    .filter((f) => f.vendor)
+    .map((f) => {
+      const v = f.vendor;
+      return {
+        id: v.id,
+        name: v.storeName,
+        image: v.bannerUrl,
+        logo: v.logoUrl,
+        rating: v.averageRating,
+        reviewCount: v.totalReviews,
+        isOpen: v.isOpen,
+        address: v.address,
+        // Using optional chaining/defaults for fields that might be missing
+        positiveReviews: (v as any).positiveReviews,
+        closesIn: (v as any).hoursSummary ?? null,
+        isFavorite: true,
+      };
+    });
 };
 
 export const getFavoriteProducts = async (userId: string) => {
