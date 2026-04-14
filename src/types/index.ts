@@ -1,0 +1,121 @@
+// src/types/index.ts
+import { Request } from "express";
+import { Role } from "@prisma/client";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Express augmentation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AuthenticatedRequest extends Request {
+  user: {
+    id: string;
+    role: Role;
+    email: string;
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API response shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ApiResponse<T = unknown> {
+  success: boolean;
+  message: string;
+  data?: T;
+  meta?: PaginationMeta;
+}
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface PaginationQuery {
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Safely extracts pagination params from Express req.query.
+ * Express types req.query values as string | ParsedQs | ... so we cast once here.
+ */
+export const extractPagination = (
+  query: Record<string, unknown>,
+): PaginationQuery => ({
+  page: query.page ? Number(query.page) : undefined,
+  limit: query.limit ? Number(query.limit) : undefined,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TokenPayload {
+  sub: string; // userId
+  role: Role;
+  email: string;
+  iat?: number;
+  exp?: number;
+}
+
+export interface TokenPair {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // unix seconds
+}
+
+export interface SignUpDto {
+  name: string;
+  email: string;
+  phoneNumber: string;
+  password: string;
+  role: Role;
+}
+
+export interface SignInDto {
+  email: string;
+  password: string;
+}
+
+export interface VerifyEmailDto {
+  code: string;
+  purpose: "verify-account" | "reset-password";
+  role?: Role;
+  email?: string;
+}
+
+export interface ForgotPasswordDto {
+  email: string;
+  purpose: string;
+}
+
+export interface ResetPasswordDto {
+  password: string;
+  confirmPassword: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checkout
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CheckoutDto {
+  /** ID of an Address row — mutually exclusive with savedLocationId */
+  addressId?: string;
+  /** ID of a SavedLocation row — converted to a temp Address on the fly */
+  savedLocationId?: string;
+  paymentMethod: "wallet" | "card" | "bank_transfer";
+  selectedCardId?: string;
+  usePartialWallet?: boolean;
+  instructions?: string;
+  contactMethod?: "in-app" | "normal";
+  promoCode?: string;
+}
+
+// Re-export notification payload types
+export type {
+  UserNotificationSettingsPayload,
+  VendorNotificationSettingsPayload,
+  NotificationSettingsPayload,
+} from "./notifications";
