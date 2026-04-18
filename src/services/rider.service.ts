@@ -57,23 +57,42 @@ export const updateRiderProfile = async (
 ) => {
   const { fullName, phone, imageUrl, ...riderData } = data;
 
-  const [user] = await prisma.$transaction([
-    prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(fullName && { fullName }),
-        ...(phone && { phone }),
-        ...(imageUrl && { imageUrl }),
-      },
-      select: { id: true, fullName: true, phone: true, imageUrl: true },
-    }),
-    prisma.riderProfile.update({
-      where: { userId },
-      data: riderData,
-    }),
-  ]);
+  const userFields = {
+    ...(fullName && { fullName }),
+    ...(phone && { phone }),
+    ...(imageUrl && { imageUrl }),
+  };
 
-  return user;
+  const riderFields = {
+    ...(riderData.vehicleType && { vehicleType: riderData.vehicleType }),
+    ...(riderData.vehiclePlate && { vehiclePlate: riderData.vehiclePlate }),
+  };
+
+  const ops: any[] = [];
+
+  if (Object.keys(userFields).length > 0) {
+    ops.push(
+      prisma.user.update({
+        where: { id: userId },
+        data: userFields,
+        select: { id: true, fullName: true, phone: true, imageUrl: true },
+      }),
+    );
+  }
+
+  if (Object.keys(riderFields).length > 0) {
+    ops.push(
+      prisma.riderProfile.update({
+        where: { userId },
+        data: riderFields,
+      }),
+    );
+  }
+
+  if (ops.length === 0) return {};
+
+  const results = await prisma.$transaction(ops);
+  return results[0];
 };
 
 export const changeRiderPassword = async (
@@ -139,11 +158,11 @@ export const getRiderOnboardingState = async (userId: string) => {
   const step4Done = !!bank; // Bank
 
   let resumeStep = 0;
-  if (!step0Done) resumeStep = 1;
-  else if (!step1Done) resumeStep = 2;
-  else if (!step2Done) resumeStep = 3;
-  else if (!step3Done) resumeStep = 4;
-  else if (!step4Done) resumeStep = 5;
+  if (!step0Done) resumeStep = 0;
+  else if (!step1Done) resumeStep = 1;
+  else if (!step2Done) resumeStep = 2;
+  else if (!step3Done) resumeStep = 3;
+  else if (!step4Done) resumeStep = 4;
   else resumeStep = 5; // Review
 
   return {
@@ -1334,4 +1353,249 @@ export const getRiderCurrentLocation = async (
   });
   if (!delivery) throw AppError.notFound("Delivery");
   return { lat: rider.currentLat, lng: rider.currentLng };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Documents
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRiderDocuments = async (userId: string) => {
+  const rider = await _requireRider(userId);
+
+  const overallStatus = rider.status; // "not_verified" | "pending" | "verified" | "rejected" | "suspended"
+
+  // Map overall status to frontend shape
+  const statusMap: Record<
+    string,
+    "none" | "pending" | "approved" | "rejected" | "partial"
+  > = {
+    not_verified: "none",
+    pending: "pending",
+    verified: "approved",
+    rejected: "rejected",
+    suspended: "rejected",
+  };
+
+  const mappedStatus = statusMap[overallStatus] ?? "none";
+
+  // If no docs uploaded at all
+  const hasAnyDoc =
+    rider.bikeDocUrl ||
+    rider.plateImageUrl ||
+    rider.idDocUrl ||
+    rider.selfieUrl ||
+    rider.residenceDocUrl;
+
+  if (!hasAnyDoc) {
+    return {
+      overallStatus: "none" as const,
+      canSubmit: false,
+      sections: [],
+    };
+  }
+
+  // Build sections from rider profile fields
+  const sections = [];
+
+  // ── Bike Details ──
+  if (rider.vehicleType || rider.bikeDocUrl || rider.plateImageUrl) {
+    const bikeItems = [];
+
+    if (rider.bikeVerificationType && rider.bikeDocUrl) {
+      bikeItems.push({
+        id: "bike_doc",
+        label: "Uploaded Document",
+        fileName: _extractFileName(rider.bikeDocUrl),
+        fileUrl: rider.bikeDocUrl,
+        status: _resolveDocStatus(
+          overallStatus,
+          rider.bikeDocUrl,
+          rider.bikeRejectionReason,
+        ),
+        rejectionReason: rider.bikeRejectionReason ?? null,
+      });
+    }
+
+    if (rider.vehiclePlate && rider.plateImageUrl) {
+      bikeItems.push({
+        id: "plate_doc",
+        label: "Uploaded Document",
+        fileName: _extractFileName(rider.plateImageUrl),
+        fileUrl: rider.plateImageUrl,
+        status: _resolveDocStatus(
+          overallStatus,
+          rider.plateImageUrl,
+          rider.plateRejectionReason,
+        ),
+        rejectionReason: rider.plateRejectionReason ?? null,
+      });
+    }
+
+    sections.push({
+      title: "Bike Details",
+      meta: [
+        rider.bikeVerificationType
+          ? `Bike Verification Type\n${rider.bikeVerificationType}`
+          : null,
+        rider.vehiclePlate ? `Bike Plate Number\n${rider.vehiclePlate}` : null,
+      ].filter(Boolean),
+      items: bikeItems,
+    });
+  }
+
+  // ── Identity Verification ──
+  if (
+    rider.identityType ||
+    rider.idDocUrl ||
+    rider.selfieUrl ||
+    rider.residenceType
+  ) {
+    const identityItems = [];
+
+    if (rider.identityType && rider.idDocUrl) {
+      identityItems.push({
+        id: "id_doc",
+        label: `Upload ${rider.identityType}`,
+        fileName: _extractFileName(rider.idDocUrl),
+        fileUrl: rider.idDocUrl,
+        status: _resolveDocStatus(
+          overallStatus,
+          rider.idDocUrl,
+          rider.idRejectionReason,
+        ),
+        rejectionReason: rider.idRejectionReason ?? null,
+      });
+    }
+
+    if (rider.selfieUrl) {
+      identityItems.push({
+        id: "selfie_doc",
+        label: "Passport Photograph",
+        fileName: _extractFileName(rider.selfieUrl),
+        fileUrl: rider.selfieUrl,
+        status: _resolveDocStatus(
+          overallStatus,
+          rider.selfieUrl,
+          rider.selfieRejectionReason,
+        ),
+        rejectionReason: rider.selfieRejectionReason ?? null,
+      });
+    }
+
+    if (rider.residenceType && rider.residenceDocUrl) {
+      identityItems.push({
+        id: "residence_doc",
+        label: "Upload Document",
+        fileName: _extractFileName(rider.residenceDocUrl),
+        fileUrl: rider.residenceDocUrl,
+        status: _resolveDocStatus(
+          overallStatus,
+          rider.residenceDocUrl,
+          rider.residenceRejectionReason,
+        ),
+        rejectionReason: rider.residenceRejectionReason ?? null,
+      });
+    }
+
+    sections.push({
+      title: "Identity Verification",
+      meta: [
+        rider.identityType
+          ? `Identity Verification Type\n${rider.identityType}`
+          : null,
+        rider.residenceType
+          ? `Proof of Residence Type\n${rider.residenceType}`
+          : null,
+      ].filter(Boolean),
+      items: identityItems,
+    });
+  }
+
+  // Determine if any doc is rejected
+  const allItems = sections.flatMap((s) => s.items);
+  const hasRejected = allItems.some((i) => i.status === "rejected");
+  const allApproved = allItems.every((i) => i.status === "approved");
+  const hasUploaded = allItems.some(
+    (i) => i.status === "uploaded" || i.status === "pending",
+  );
+
+  // canSubmit: true if there are uploaded/re-uploaded docs and status isn't pending
+  const canSubmit =
+    mappedStatus !== "pending" &&
+    mappedStatus !== "approved" &&
+    allItems.length > 0 &&
+    !allItems.some((i) => i.status === "rejected");
+
+  // Refine overallStatus
+  let finalStatus: "none" | "pending" | "approved" | "rejected" | "partial" =
+    mappedStatus;
+  if (mappedStatus === "rejected" && !hasRejected) finalStatus = "partial";
+  if (allApproved) finalStatus = "approved";
+
+  return {
+    overallStatus: finalStatus,
+    canSubmit,
+    sections,
+  };
+};
+
+export const uploadRiderDocument = async (
+  userId: string,
+  documentId: string,
+  url: string,
+): Promise<{ success: boolean }> => {
+  const rider = await _requireRider(userId);
+
+  const fieldMap: Record<string, any> = {
+    bike_doc: { bikeDocUrl: url, bikeRejectionReason: null },
+    plate_doc: { plateImageUrl: url, plateRejectionReason: null },
+    id_doc: { idDocUrl: url, idRejectionReason: null },
+    selfie_doc: { selfieUrl: url, selfieRejectionReason: null },
+    residence_doc: { residenceDocUrl: url, residenceRejectionReason: null },
+  };
+
+  const data = fieldMap[documentId];
+  if (!data) throw AppError.badRequest("Invalid document ID.");
+
+  await prisma.riderProfile.update({
+    where: { id: rider.id },
+    data,
+  });
+
+  return { success: true };
+};
+
+export const submitRiderDocuments = async (
+  userId: string,
+): Promise<{ success: boolean }> => {
+  const rider = await _requireRider(userId);
+
+  await prisma.riderProfile.update({
+    where: { id: rider.id },
+    data: { status: "pending" },
+  });
+
+  return { success: true };
+};
+
+// ── Doc helpers ────────────────────────────────────────────────────────────────
+
+const _extractFileName = (url: string): string => {
+  try {
+    return url.split("/").pop()?.split("?")[0] ?? "document";
+  } catch {
+    return "document";
+  }
+};
+
+const _resolveDocStatus = (
+  riderStatus: string,
+  docUrl: string | null,
+  rejectionReason?: string | null,
+): "approved" | "pending" | "rejected" | "uploaded" => {
+  if (!docUrl) return "pending";
+  if (rejectionReason) return "rejected";
+  if (riderStatus === "verified") return "approved";
+  if (riderStatus === "pending") return "pending";
+  return "uploaded"; // Has a doc but not yet submitted/reviewed
 };

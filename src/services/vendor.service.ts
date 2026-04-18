@@ -611,11 +611,11 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
     contactMethod: order.contactMethod ?? "in-app",
     deliveryLat: order.deliveryLat,
     deliveryLng: order.deliveryLng,
+    vendorOtpVerified: order.delivery?.vendorOtpVerified ?? false,
     rider: rider
       ? {
-          // name: order.riderName ?? rider.user?.fullName ?? "",
-          // phone: order.riderPhone ?? rider.user?.phone ?? "",
-          // code: order.riderCode ?? null,
+          name: rider.user?.fullName ?? "",
+          phone: rider.user?.phone ?? "",
           lat: rider.currentLat,
           lng: rider.currentLng,
         }

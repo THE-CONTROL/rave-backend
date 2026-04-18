@@ -347,3 +347,39 @@ export const getRiderCurrentLocation = asyncHandler(async (req, res) => {
     await riderService.getRiderCurrentLocation(uid(req), req.params.orderId),
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Documents
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRiderDocuments = asyncHandler(
+  async (req: Request, res: Response) => {
+    ok(res, await riderService.getRiderDocuments(uid(req)));
+  },
+);
+
+export const uploadRiderDocument = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { url } = req.body;
+    if (!url) throw AppError.badRequest("Document URL is required.");
+    ok(
+      res,
+      await riderService.uploadRiderDocument(
+        uid(req),
+        req.params.documentId,
+        url,
+      ),
+      "Document uploaded.",
+    );
+  },
+);
+
+export const submitRiderDocuments = asyncHandler(
+  async (req: Request, res: Response) => {
+    ok(
+      res,
+      await riderService.submitRiderDocuments(uid(req)),
+      "Documents submitted for review.",
+    );
+  },
+);

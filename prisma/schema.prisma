@@ -847,6 +847,11 @@ model RiderProfile {
   selfieUrl            String?       // URL for the rider's passport/selfie photo
   residenceType        String?       // "Utility Bill" | "Bank Statement" | "Tenancy Agreement"
   residenceDocUrl      String?       // URL for proof of residence image
+  bikeRejectionReason      String?
+  plateRejectionReason     String?
+  idRejectionReason        String?
+  selfieRejectionReason    String?
+  residenceRejectionReason String?
   // -----------------------------
 
   totalDeliveries   Int              @default(0)

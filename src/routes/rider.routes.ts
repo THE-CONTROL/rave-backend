@@ -111,4 +111,9 @@ router.post("/onboarding/submit", ctrl.submitRiderOnboarding);
 
 router.get("/location/current/:orderId", ctrl.getRiderCurrentLocation);
 
+// ── Documents ─────────────────────────────────────────────────────────────────
+router.get("/documents", ctrl.getRiderDocuments);
+router.patch("/documents/:documentId", ctrl.uploadRiderDocument);
+router.post("/documents/submit", ctrl.submitRiderDocuments);
+
 export default router;

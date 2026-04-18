@@ -209,6 +209,7 @@ export const getOrderTracking = async (userId: string, orderId: string) => {
     deliveryLng: order.deliveryLng,
     deliveryInstructions: order.deliveryInstructions,
     contactMethod: order.contactMethod ?? "in-app",
+    vendorOtpVerified: order.delivery?.vendorOtpVerified ?? false,
     user: {
       fullName: order.user.fullName,
       phone: order.user.phone,

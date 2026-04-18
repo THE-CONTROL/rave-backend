@@ -47,7 +47,7 @@ export const initializeCheckout = async (
     amount: Math.round(Math.abs(amount) * 100), // Ensure absolute positive value in Kobo
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
-    callback_url: "exp://10.247.23.161:8081/checkout-result",
+    callback_url: "rave://checkout-result",
   });
 
   return {

@@ -10,6 +10,27 @@ import * as notif from "../events/notification.events";
 import * as paymentService from "../services/payment.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Profile Completion
+// ─────────────────────────────────────────────────────────────────────────────
+
+const recalculateProfileCompletion = async (userId: string): Promise<void> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { imageUrl: true, location: true },
+  });
+  if (!user) return;
+
+  let completion = 0;
+  if (user.imageUrl) completion += 50;
+  if (user.location) completion += 50;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { profileCompletion: completion },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Profile
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -43,7 +64,7 @@ export const updateProfile = async (
     location?: string;
   },
 ) => {
-  return prisma.user.update({
+  const updated = await prisma.user.update({
     where: { id: userId },
     data,
     select: {
@@ -54,6 +75,12 @@ export const updateProfile = async (
       location: true,
     },
   });
+
+  if (data.imageUrl || data.location) {
+    await recalculateProfileCompletion(userId);
+  }
+
+  return updated;
 };
 
 export const changePassword = async (
@@ -91,7 +118,7 @@ export const getSavedLocations = (userId: string) =>
     orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
   });
 
-export const upsertLocation = (
+export const upsertLocation = async (
   userId: string,
   data: {
     name: string;
@@ -104,11 +131,18 @@ export const upsertLocation = (
   },
   locationId?: string,
 ) => {
-  if (locationId) {
-    return prisma.savedLocation.update({ where: { id: locationId }, data });
-  }
+  const result = locationId
+    ? await prisma.savedLocation.update({ where: { id: locationId }, data })
+    : await prisma.savedLocation.create({ data: { userId, ...data } });
 
-  return prisma.savedLocation.create({ data: { userId, ...data } });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { location: data.description },
+  });
+
+  await recalculateProfileCompletion(userId);
+
+  return result;
 };
 
 export const deleteLocation = async (
@@ -337,20 +371,17 @@ export const processCheckout = async (
   paymentUrl?: string;
   reference: string;
 }> => {
-  // 1. Fetch Dynamic Cart (Pricing, VAT, and automatic promos)
   const { items, summary } = await getCart(userId);
 
   if (!items.length || !summary) {
     throw AppError.badRequest("Your cart is empty.");
   }
 
-  // 2. Fetch the source SavedLocation
   const loc = await prisma.savedLocation.findFirst({
     where: { id: dto.savedLocationId, userId },
   });
   if (!loc) throw AppError.notFound("Saved location");
 
-  // Fetch user email for Paystack
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { email: true },
@@ -359,9 +390,7 @@ export const processCheckout = async (
 
   const vendorId = items[0].menuItem.vendorId;
 
-  // 3. Database Transaction: Create the Order
   const order = await prisma.$transaction(async (tx) => {
-    // Standard ETA logic
     const etaMinutes = 25;
     const arrivalTime = new Date();
     arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
@@ -376,19 +405,15 @@ export const processCheckout = async (
         serviceFee: summary.serviceFee || 0,
         discountAmount: summary.discountAmount || 0,
         paymentMethod: dto.paymentMethod,
-        status: "new", // Initial state
-
+        status: "new",
         estimatedArrival: arrivalTime,
         etaDuration: etaMinutes,
         evidenceUrl: "",
-
-        // Mapping SavedLocation fields to Order columns
         deliveryAddress: loc.description,
         deliveryLat: loc.latitude,
         deliveryLng: loc.longitude,
         deliveryInstructions: dto.instructions ?? loc.instructions,
         contactMethod: dto.contactMethod ?? "in-app",
-
         items: {
           create: items.map((item) => ({
             menuItemId: item.menuItem.id,
@@ -401,8 +426,6 @@ export const processCheckout = async (
     });
   });
 
-  // 4. Initialize Payment (Initiated Phase)
-  // This creates the 'initiated' transaction record in your DB and gets the Paystack URL
   const payment = await paymentService.initializeCheckout(
     user.email,
     summary.total,
@@ -413,10 +436,8 @@ export const processCheckout = async (
     order.id,
   );
 
-  // 5. Cleanup: Clear the cart
   await prisma.cartItem.deleteMany({ where: { userId } });
 
-  // 6. Notifications (Non-blocking)
   const itemsSummary = items
     .map((i) => `${i.qty}x ${i.menuItem.name}`)
     .join(", ");
@@ -434,14 +455,13 @@ export const processCheckout = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getCart = async (userId: string) => {
-  // 1. Fetch Cart Items with MenuItem and associated Images
   const cartItems = await prisma.cartItem.findMany({
     where: { userId },
     include: {
       menuItem: {
         include: {
           images: {
-            orderBy: { isMain: "desc" }, // Ensures main image is first
+            orderBy: { isMain: "desc" },
           },
         },
       },
@@ -450,8 +470,6 @@ export const getCart = async (userId: string) => {
 
   if (cartItems.length === 0) return { items: [], summary: null };
 
-  // 2. Fetch Active Promotions for the Vendor
-  // (Assuming single-vendor cart restriction is enforced)
   const vendorId = cartItems[0].menuItem.vendorId;
   const now = new Date();
 
@@ -461,19 +479,17 @@ export const getCart = async (userId: string) => {
       isActive: true,
       startDate: { lte: now },
       endDate: { gte: now },
-      promoCode: null, // Automatically applied (no code needed)
+      promoCode: null,
     },
   });
 
   let runningSubtotal = 0;
   let runningDiscountTotal = 0;
 
-  // 3. Map items and calculate per-item discounts
   const mappedItems = cartItems.map((item) => {
     const originalPrice = item.menuItem.price;
     const itemSubtotal = originalPrice * item.qty;
 
-    // Check if this specific product has an active promotion
     const promo = activePromos.find(
       (p) => p.appliesTo === "all" || p.productIds.includes(item.menuItemId),
     );
@@ -498,7 +514,7 @@ export const getCart = async (userId: string) => {
     return {
       id: item.id,
       qty: item.qty,
-      extras: item.extras, // From your Json field
+      extras: item.extras,
       discountLabel,
       originalPrice,
       currentPrice,
@@ -534,10 +550,10 @@ export const getCart = async (userId: string) => {
       subtotal: runningSubtotal,
       discountAmount: runningDiscountTotal,
       vat: vatAmount,
-      total: finalTotal, // This is the new total the frontend footer will display
+      total: finalTotal,
       itemCount: mappedItems.length,
-      serviceFee: serviceFee,
-      deliveryBase: deliveryBase,
+      serviceFee,
+      deliveryBase,
     },
   };
 };
@@ -550,7 +566,6 @@ export const addToCart = async (
   const item = await prisma.menuItem.findUnique({ where: { id: menuItemId } });
   if (!item || !item.isActive) throw AppError.notFound("Menu item");
 
-  // Check cart doesn't already have items from a different vendor
   const existing = await prisma.cartItem.findFirst({
     where: { userId },
     include: { menuItem: { select: { vendorId: true } } },
@@ -637,7 +652,6 @@ export const submitReview = async (
     },
   });
 
-  // Update vendor's aggregate rating
   const stats = await prisma.review.aggregate({
     where: { vendorId: order.vendorId },
     _avg: { restaurantRating: true },
@@ -655,7 +669,6 @@ export const submitReview = async (
     data: { averageRating: newAvg, totalReviews, positiveReviews },
   });
 
-  // Notify vendor
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: order.vendorId },
     select: { userId: true },
@@ -903,6 +916,7 @@ export const toggleFavoriteProduct = async (
   });
   return { isFavorite: true };
 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Refund — delete / cancel
 // ─────────────────────────────────────────────────────────────────────────────
@@ -950,7 +964,7 @@ export const clearSearchHistory = async (userId: string): Promise<void> => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Home — usual orders (recently completed for quick reorder)
+// Home — usual orders
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getUsualOrders = async (userId: string) => {
@@ -982,13 +996,10 @@ export const getFavoriteRestaurants = async (userId: string) => {
 
   const favorites = await prisma.favoriteRestaurant.findMany({
     where: { userId },
-    include: {
-      vendor: true, // This will now work because 'vendor' is defined in schema
-    },
+    include: { vendor: true },
     orderBy: { id: "desc" },
   });
 
-  // Map only if vendor exists (prevents crashes if a vendor was deleted)
   return favorites
     .filter((f) => f.vendor)
     .map((f) => {
@@ -1002,7 +1013,6 @@ export const getFavoriteRestaurants = async (userId: string) => {
         reviewCount: v.totalReviews,
         isOpen: v.isOpen,
         address: v.address,
-        // Using optional chaining/defaults for fields that might be missing
         positiveReviews: (v as any).positiveReviews,
         closesIn: (v as any).hoursSummary ?? null,
         isFavorite: true,
