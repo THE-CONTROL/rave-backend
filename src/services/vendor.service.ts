@@ -699,7 +699,7 @@ export const getVendorTransactions = async (
   ]);
 
   // We map the database records to the Transaction interface here
-  const formattedTransactions = transactions.map((tx) => ({
+  const formattedTransactions = transactions.map((tx: any) => ({
     ...tx,
     formattedAmount: `₦${tx.amount.toLocaleString()}`,
     // Ensure colors match the UI design provided in images

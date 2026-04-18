@@ -79,7 +79,7 @@ export const signOut = asyncHandler(async (req: Request, res: Response) => {
 export const getOnboardingSlides = asyncHandler(
   async (req: Request, res: Response) => {
     const role = (req.query.role as Role) ?? "user";
-    ok(res, getSlides(role));
+    ok(res, await getSlides(role));
   },
 );
 

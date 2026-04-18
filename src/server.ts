@@ -4,7 +4,7 @@ import { config } from "./config";
 import { logger } from "./config/logger";
 import { connectDatabase, disconnectDatabase } from "./config/database";
 import { startJobs } from "./jobs";
-import { seedPlatformConfig } from "./services/config.service";
+import { seedPlatformConfig, seedAds } from "./services/config.service";
 import { seedOnboardingSlides } from "./services/onboarding.service";
 
 const startServer = async () => {
@@ -15,6 +15,7 @@ const startServer = async () => {
     // Seed admin-controlled data on first boot
     await seedPlatformConfig();
     await seedOnboardingSlides();
+    await seedAds();
     logger.info("✅ Platform config and onboarding slides seeded");
 
     if (config.isProd) startJobs();
