@@ -71,7 +71,7 @@ export const cancelOrderByUser = async (
   await prisma.$transaction(async (tx) => {
     await tx.order.update({
       where: { id: orderId },
-      data: { status: "cancelled", cancelReason: reason, cancelledBy: "user" },
+      data: { status: "cancelled" },
     });
   });
 

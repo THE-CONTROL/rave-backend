@@ -86,7 +86,6 @@ export const submitFeedback = async (
       role,
       type: data.type,
       message: data.message,
-      images: data.images ?? [],
     },
   });
 };
@@ -128,7 +127,7 @@ export const getRecentRefs = async (userId: string, role: Role) => {
   if (role === "rider") {
     const rider = await prisma.riderProfile.findUnique({ where: { userId } });
     if (!rider) return [];
-    const txs = await prisma.riderTransaction.findMany({
+    const txs = await prisma.transaction.findMany({
       where: { riderId: rider.id },
       select: { id: true, title: true, amount: true, createdAt: true },
       orderBy: { createdAt: "desc" },

@@ -39,25 +39,6 @@ export const processReferralBonuses = async (): Promise<void> => {
         where: { id: referral.id },
         data: { status: "successful", bonusPaid: true },
       });
-
-      await tx.wallet.upsert({
-        where: { userId: referral.referrerId },
-        create: {
-          userId: referral.referrerId,
-          available: REFERRAL.REFERRER_BONUS,
-        },
-        update: { available: { increment: REFERRAL.REFERRER_BONUS } },
-      });
-
-      await tx.transaction.create({
-        data: {
-          userId: referral.referrerId,
-          type: "referral_bonus",
-          status: "successful",
-          title: `Referral Bonus — ${referral.referee.fullName}`,
-          amount: REFERRAL.REFERRER_BONUS,
-        },
-      });
     });
 
     await notifyReferralBonus(

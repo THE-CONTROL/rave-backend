@@ -193,7 +193,7 @@ export const saveRiderOnboardingStep = async (
         data: {
           stateOfResidence: data.stateOfResidence,
           cityOfResidence: data.cityOfResidence,
-          homeAddress: data.homeAddress, // Update this in the profile too
+          currentAddress: data.currentAddress,
         },
       }),
     ]);

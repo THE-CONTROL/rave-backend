@@ -35,28 +35,10 @@ export const cleanupStaleOrders = async (): Promise<void> => {
         where: { id: order.id },
         data: {
           status: "cancelled",
-          cancelReason: "Order not accepted by restaurant in time.",
-          cancelledBy: "system",
         },
       });
 
       // Refund
-      await tx.wallet.upsert({
-        where: { userId: order.userId },
-        create: { userId: order.userId, available: order.totalAmount },
-        update: { available: { increment: order.totalAmount } },
-      });
-
-      await tx.transaction.create({
-        data: {
-          userId: order.userId,
-          orderId: order.id,
-          type: "refund",
-          status: "successful",
-          title: "Auto-cancelled — Restaurant did not respond",
-          amount: order.totalAmount,
-        },
-      });
     });
 
     await notifyOrderCancelled(order.userId, order.id, "store");

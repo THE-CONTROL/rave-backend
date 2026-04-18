@@ -29,27 +29,23 @@ export const resolveBankAccount = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getCheckoutPreview = async (userId: string) => {
-  const [cartItems, wallet, savedCards, defaultAddress] = await Promise.all([
-    prisma.cartItem.findMany({
-      where: { userId },
-      include: {
-        menuItem: {
-          select: { name: true, price: true, imageUrl: true, vendorId: true },
+  const cartItems = await prisma.cartItem.findMany({
+    where: { userId },
+    include: {
+      menuItem: {
+        select: {
+          name: true,
+          price: true,
+          vendorId: true,
+          images: {
+            where: { isMain: true },
+            select: { url: true },
+            take: 1,
+          },
         },
       },
-    }),
-    prisma.wallet.findUnique({ where: { userId } }),
-    prisma.savedCard.findMany({
-      where: { userId },
-      select: { id: true, brand: true, last4: true, isDefault: true },
-    }),
-    // Return the full address row — the frontend needs the id to send back
-    // as addressId in processCheckout, and the address string to display
-    prisma.address.findFirst({
-      where: { userId, isDefault: true },
-      select: { id: true, label: true, address: true, lat: true, lng: true },
-    }),
-  ]);
+    },
+  });
 
   const subtotal = cartItems.reduce(
     (s, ci) => s + ci.menuItem.price * ci.qty,
@@ -61,6 +57,7 @@ export const getCheckoutPreview = async (userId: string) => {
     cfg.fees.deliveryBase(),
     cfg.fees.serviceFee(),
   ]);
+
   const vat = Math.round(subtotal * vatRate);
   const total = subtotal + vat + deliveryFee + serviceFee;
 
@@ -70,27 +67,12 @@ export const getCheckoutPreview = async (userId: string) => {
     deliveryFee,
     serviceFee,
     total,
-    walletBalance: wallet?.available ?? 0,
-    canPayWithWallet: (wallet?.available ?? 0) >= total,
-    // Full default address object — frontend uses id for checkout, label+address for display
-    defaultAddress: defaultAddress
-      ? {
-          id: defaultAddress.id,
-          label: defaultAddress.label,
-          address: defaultAddress.address,
-          lat: defaultAddress.lat,
-          lng: defaultAddress.lng,
-        }
-      : null,
-    // Keep detectedAddress as a convenience string for backwards compat
-    detectedAddress: defaultAddress?.address ?? null,
-    savedCards,
     items: cartItems.map((ci) => ({
       id: ci.id,
       name: ci.menuItem.name,
       price: ci.menuItem.price,
       qty: ci.qty,
-      image: ci.menuItem.imageUrl,
+      image: ci.menuItem.images[0]?.url ?? null, // ← gets the main image URL
     })),
   };
 };

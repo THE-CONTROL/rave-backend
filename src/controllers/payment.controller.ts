@@ -10,10 +10,6 @@ export const listBanks = asyncHandler(async (_req, res) => {
   ok(res, await paymentService.getNigerianBanks());
 });
 
-export const getCardMerchants = asyncHandler(async (_req, res) => {
-  ok(res, paymentService.getCardMerchants());
-});
-
 export const resolveAccount = asyncHandler(async (req, res) => {
   const { accountNumber, bankCode } = req.query as {
     accountNumber: string;
@@ -24,26 +20,6 @@ export const resolveAccount = asyncHandler(async (req, res) => {
     bankCode,
   );
   ok(res, { accountName });
-});
-
-export const initializeTopUp = asyncHandler(async (req, res) => {
-  const { amount, methodId } = req.body;
-  ok(
-    res,
-    await paymentService.initializeTopUp(uid(req), Number(amount), methodId),
-  );
-});
-
-export const initializeCardSave = asyncHandler(async (req, res) => {
-  ok(res, await paymentService.initializeCardSave(uid(req)));
-});
-
-export const processWithdrawal = asyncHandler(async (req, res) => {
-  const { amount, bankId } = req.body;
-  ok(
-    res,
-    await paymentService.processWithdrawal(uid(req), Number(amount), bankId),
-  );
 });
 
 /**

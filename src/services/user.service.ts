@@ -208,9 +208,13 @@ export const getOrderById = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
     where: { id: orderId, userId },
     include: {
-      menuItem: {
+      items: {
         include: {
-          images: true,
+          menuItem: {
+            include: {
+              images: true,
+            },
+          },
         },
       },
       user: { select: { fullName: true, phone: true, imageUrl: true } },
@@ -237,19 +241,24 @@ export const getOrderById = async (userId: string, orderId: string) => {
       },
     },
   });
+
   if (!order) throw AppError.notFound("Order");
 
   const rider = order.delivery?.rider;
 
   return {
     ...order,
+    items: order.items.map((item) => ({
+      ...item,
+      menuItem: item.menuItem,
+    })),
     deliveryInstructions: order.deliveryInstructions,
     contactMethod: order.contactMethod ?? "in-app",
     rider: rider
       ? {
           name: rider.user?.fullName ?? "",
           phone: rider.user?.phone ?? "",
-          image: rider.user.imageUrl,
+          image: rider.user?.imageUrl ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
         }
