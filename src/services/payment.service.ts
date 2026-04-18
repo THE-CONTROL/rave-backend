@@ -157,6 +157,6 @@ export const resolveAccountName = async (
     );
     return data.data.account_name;
   } catch {
-    throw AppError.badRequest("Account verification failed.");
+    return "Could not verify";
   }
 };

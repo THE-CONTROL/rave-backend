@@ -87,11 +87,6 @@ router.get("/banks", ctrl.getBankAccounts);
 router.post("/banks", validate(v.riderSaveBankSchema), ctrl.saveBankAccount);
 router.patch("/banks/:id/primary", ctrl.setPrimaryBank);
 router.delete("/banks/:id", ctrl.deleteBankAccount);
-router.get(
-  "/banks/resolve",
-  validate(v.resolveBankSchema, "query"),
-  paymentCtrl.resolveAccount,
-);
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 router.get("/notifications", ctrl.getNotifications);

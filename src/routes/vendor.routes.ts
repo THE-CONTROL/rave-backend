@@ -139,12 +139,6 @@ router.patch("/notifications/settings", ctrl.updateNotificationSettings);
 // ── Evidence upload ───────────────────────────────────────────────────────────
 router.post("/orders/:id/evidence", evidenceCtrl.uploadEvidence);
 
-// ── Bank resolution ───────────────────────────────────────────────────────────
-router.get(
-  "/banks/resolve",
-  validate(v.resolveBankSchema, "query"),
-  paymentCtrl.resolveAccount,
-);
 router.patch("/push-token", ctrl.updatePushToken);
 
 router.get("/orders/:id/rider-location", ctrl.getRiderLocation);
