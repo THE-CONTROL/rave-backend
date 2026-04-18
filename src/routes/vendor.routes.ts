@@ -83,15 +83,18 @@ router.patch(
   validate(v.updateOrderStatusSchema),
   orderCtrl.advanceStatus,
 );
+router.patch(
+  "/:id/evidence",
+  validate(v.uploadEvidenceSchema), // Validates that evidenceUrl is a valid URL
+  orderCtrl.uploadOrderEvidence,
+);
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 router.get("/analytics", ctrl.getAnalytics);
 
 // ── Earnings / Transactions ───────────────────────────────────────────────────
-router.get("/earnings", ctrl.getEarningsSummary);
 router.get("/transactions", ctrl.getTransactions);
 router.get("/transactions/:id", ctrl.getTransactionById);
-router.post("/payout", validate(v.payoutSchema), ctrl.requestPayout);
 
 // ── Bank Accounts ─────────────────────────────────────────────────────────────
 router.get("/banks", ctrl.getBankAccounts);

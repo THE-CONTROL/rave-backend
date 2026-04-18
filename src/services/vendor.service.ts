@@ -6,42 +6,49 @@ import { buildMeta, maskAccountNumber, parsePagination } from "../utils";
 import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
+import { format } from "date-fns"; //
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile
 // ─────────────────────────────────────────────────────────────────────────────
+
+// src/services/vendor.service.ts
 
 export const getVendorProfile = async (userId: string) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
       id: true,
-      accountId: true,
+      accountId: true, // e.g., NXV-8947
       fullName: true,
       email: true,
       phone: true,
       imageUrl: true,
-      joinedDate: true,
+      createdAt: true, // Used for "Member Since"
       vendorProfile: {
         select: {
           id: true,
           storeName: true,
           storeStatus: true,
           isOpen: true,
-          autoAcceptOrders: true,
-          address: true,
-          description: true,
-          bannerUrl: true,
-          logoUrl: true,
-          hoursSummary: true,
-          averageRating: true,
-          totalReviews: true,
         },
       },
     },
   });
+
   if (!user) throw AppError.notFound("User");
-  return user;
+
+  // Format date for UI
+  const memberSince = new Date(user.createdAt).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return {
+    ...user,
+    memberSince,
+  };
 };
 
 export const updateVendorProfile = async (
@@ -81,52 +88,56 @@ export const deleteVendorAccount = async (userId: string): Promise<void> => {
 // Dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 
+// src/services/vendor.service.ts
+
 export const getDashboard = async (userId: string) => {
-  const vendor = await _requireVendor(userId);
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { userId },
+    include: {
+      _count: {
+        select: { menuItems: true, ordersReceived: true },
+      },
+    },
+  });
+
+  if (!vendor) throw AppError.notFound("Vendor profile");
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
 
   const [
-    totalOrders,
-    completedOrders,
-    totalRevenueTx,
     todayOrders,
-    preparingCount,
-    readyCount,
-    ongoingCount,
+    todayRevenueAgg,
+    preparing,
+    ready,
+    riderAssigned,
+    ongoing,
+    onboardingState,
   ] = await Promise.all([
-    prisma.order.count({ where: { vendorId: vendor.id } }),
-    prisma.order.count({ where: { vendorId: vendor.id, status: "completed" } }),
-    prisma.vendorTransaction.aggregate({
-      where: { vendorId: vendor.id, type: "payment" },
-      _sum: { amount: true },
-    }),
     prisma.order.count({
+      where: { vendorId: vendor.id, createdAt: { gte: startOfToday } },
+    }),
+    prisma.transaction.aggregate({
       where: {
         vendorId: vendor.id,
-        createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+        type: "payment",
+        status: "completed",
+        createdAt: { gte: startOfToday },
       },
+      _sum: { amount: true },
     }),
     prisma.order.count({ where: { vendorId: vendor.id, status: "preparing" } }),
     prisma.order.count({ where: { vendorId: vendor.id, status: "ready" } }),
+    prisma.order.count({
+      where: {
+        vendorId: vendor.id,
+        status: "accepted",
+        delivery: { riderId: { not: "" } },
+      },
+    }),
     prisma.order.count({ where: { vendorId: vendor.id, status: "ongoing" } }),
+    getVendorOnboardingState(userId),
   ]);
-
-  const totalRevenue = totalRevenueTx._sum.amount ?? 0;
-  const completionRate =
-    totalOrders > 0 ? Math.round((completedOrders / totalOrders) * 100) : 0;
-
-  // Reuse getVendorOnboardingState so step logic stays in one place
-  const onboardingState = await getVendorOnboardingState(userId);
-
-  const STEP_DEFS = [
-    { key: "basic", label: "Store Identity & Location" },
-    { key: "branding", label: "Brand Visuals" },
-    { key: "bank", label: "Payout Destination" },
-    { key: "schedule", label: "Opening Hours" },
-  ];
-
-  const { step1Done, step2Done, step3Done, step4Done } =
-    onboardingState.stepsComplete;
-  const stepFlags = [step1Done, step2Done, step3Done, step4Done];
 
   return {
     isStoreOpen: vendor.isOpen,
@@ -134,25 +145,50 @@ export const getDashboard = async (userId: string) => {
     storeName: vendor.storeName,
     storeStatus: vendor.storeStatus,
     onboarding: {
-      complete: stepFlags.every(Boolean),
-      setupProgress: onboardingState.setupProgress,
+      complete: vendor.setupProgress === 5,
+      setupProgress: vendor.setupProgress,
       resumeStep: onboardingState.resumeStep,
       stepsComplete: onboardingState.stepsComplete,
-      steps: STEP_DEFS.map((s, i) => ({
-        key: s.key,
-        label: s.label,
-        completed: stepFlags[i] ?? false,
-      })),
+      steps: [
+        {
+          key: "basic",
+          label: "Store Identity",
+          completed: onboardingState.stepsComplete.step1Done,
+        },
+        {
+          key: "branding",
+          label: "Visuals",
+          completed: onboardingState.stepsComplete.step2Done,
+        },
+        {
+          key: "items",
+          label: "Menu Items",
+          completed: onboardingState.stepsComplete.step3Done,
+        },
+        {
+          key: "bank",
+          label: "Payout Info",
+          completed: onboardingState.stepsComplete.step4Done,
+        },
+        {
+          key: "review",
+          label: "Store Review",
+          completed: vendor.storeStatus !== "under_review",
+        },
+      ],
     },
     stats: {
       todayOrders,
-      preparing: preparingCount,
-      ready: readyCount,
-      inTransit: ongoingCount,
-      totalOrders,
-      totalRevenue,
-      completedOrders,
-      completionRate,
+      todayRevenue: todayRevenueAgg._sum.amount ?? 0,
+      preparing,
+      ready,
+      riderAssigned,
+      inTransit: ongoing,
+      totalOrders: vendor._count.ordersReceived,
+      totalItems: vendor._count.menuItems,
+      totalRevenue: 0,
+      completedOrders: 0,
+      completionRate: 0,
     },
   };
 };
@@ -329,7 +365,11 @@ export const getMenuItems = async (
   const [items, total] = await Promise.all([
     prisma.menuItem.findMany({
       where,
-      include: { categories: { include: { category: true } } },
+      include: {
+        categories: { include: { category: true } },
+        images: true, // Ensure images are sent in the list view
+        ingredients: true,
+      },
       orderBy: [{ isBestSeller: "desc" }, { createdAt: "desc" }],
       skip,
       take: limit,
@@ -348,7 +388,8 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
       where: { id: itemId, vendorId: vendor.id },
       include: {
         categories: { include: { category: true } },
-        customGroups: { include: { options: true } },
+        images: true, // Included images
+        ingredients: true, // Included ingredients with new fields
       },
     }),
     prisma.review.findMany({
@@ -364,35 +405,36 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
   return { ...item, reviews };
 };
 
-export const createMenuItem = async (
-  userId: string,
-  data: {
-    name: string;
-    description?: string;
-    price: number;
-    imageUrl?: string;
-    calories?: string;
-    prepTime?: string;
-    serves?: string;
-    categoryIds?: string[];
-  },
-) => {
+export const createMenuItem = async (userId: string, data: any) => {
   const vendor = await _requireVendor(userId);
-  const { categoryIds, ...itemData } = data;
+  const { categoryIds, ingredients, images, ...itemData } = data;
 
   return prisma.menuItem.create({
     data: {
-      vendorId: vendor.id,
       ...itemData,
-      ...(categoryIds?.length
-        ? {
-            categories: {
-              create: categoryIds.map((categoryId) => ({ categoryId })),
-            },
-          }
-        : {}),
+      vendorId: vendor.id,
+      // Create images using the {url, main} object structure
+      images: {
+        create: images.map((img: { url: string; main: boolean }) => ({
+          url: img.url,
+          isMain: img.main,
+        })),
+      },
+      // Create ingredients with mealType and individual price
+      ingredients: {
+        create: ingredients.map((ing: any) => ({
+          name: ing.name,
+          portion: ing.portion,
+          mealType: ing.mealType,
+          isOptional: ing.isOptional,
+          price: ing.price,
+        })),
+      },
+      categories: {
+        create: categoryIds.map((id: string) => ({ categoryId: id })),
+      },
     },
-    include: { categories: { include: { category: true } } },
+    include: { images: true, ingredients: true, categories: true },
   });
 };
 
@@ -403,17 +445,77 @@ export const updateMenuItem = async (
     name?: string;
     description?: string;
     price?: number;
-    imageUrl?: string;
     isActive?: boolean;
     isBestSeller?: boolean;
+    isCustomizable?: boolean;
+    categoryIds?: string[];
+    images?: Array<{ url: string; main: boolean }>;
+    ingredients?: Array<{
+      name: string;
+      portion: string;
+      mealType: string;
+      isOptional: boolean;
+      price: number;
+    }>;
   },
 ) => {
   const vendor = await _requireVendor(userId);
+  const { categoryIds, ingredients, images, ...updateData } = data;
+
   const existing = await prisma.menuItem.findFirst({
     where: { id: itemId, vendorId: vendor.id },
   });
-  if (!existing) throw AppError.notFound("Menu item");
-  return prisma.menuItem.update({ where: { id: itemId }, data });
+
+  if (!existing) throw AppError.notFound("Menu item not found or unauthorized");
+
+  return prisma.menuItem.update({
+    where: { id: itemId },
+    data: {
+      ...updateData,
+
+      // 1. Sync Images: Clear and replace with updated object structure
+      ...(images && {
+        images: {
+          deleteMany: {},
+          create: images.map((img) => ({
+            url: img.url,
+            isMain: img.main,
+          })),
+        },
+      }),
+
+      // 2. Sync Ingredients: Updated with mealType and price
+      ...(ingredients && {
+        ingredients: {
+          deleteMany: {},
+          create: ingredients.map((ing) => ({
+            name: ing.name,
+            portion: ing.portion,
+            mealType: ing.mealType,
+            isOptional: ing.isOptional,
+            price: ing.price,
+          })),
+        },
+      }),
+
+      // 3. Sync Categories
+      ...(categoryIds && {
+        categories: {
+          deleteMany: {},
+          create: categoryIds.map((categoryId) => ({
+            categoryId,
+          })),
+        },
+      }),
+    },
+    include: {
+      images: true,
+      ingredients: true,
+      categories: {
+        include: { category: true },
+      },
+    },
+  });
 };
 
 export const deleteMenuItems = async (
@@ -421,6 +523,7 @@ export const deleteMenuItems = async (
   ids: string[],
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
+  // Cascade delete handles the ingredients and category joins automatically
   await prisma.menuItem.deleteMany({
     where: { id: { in: ids }, vendorId: vendor.id },
   });
@@ -510,9 +613,9 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
     deliveryLng: order.deliveryLng,
     rider: rider
       ? {
-          name: order.riderName ?? rider.user?.fullName ?? "",
-          phone: order.riderPhone ?? rider.user?.phone ?? "",
-          code: order.riderCode ?? null,
+          // name: order.riderName ?? rider.user?.fullName ?? "",
+          // phone: order.riderPhone ?? rider.user?.phone ?? "",
+          // code: order.riderCode ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
         }
@@ -529,8 +632,8 @@ export const getAnalytics = async (userId: string) => {
 
   const [totalTx, totalOrders, completedOrders, cancelledOrders] =
     await Promise.all([
-      prisma.vendorTransaction.aggregate({
-        where: { vendorId: vendor.id, type: "payment" },
+      prisma.transaction.aggregate({
+        where: { vendorId: vendor.id, type: "order" },
         _sum: { amount: true },
         _avg: { amount: true },
       }),
@@ -543,8 +646,8 @@ export const getAnalytics = async (userId: string) => {
       }),
     ]);
 
-  const totalRevenue = totalTx._sum.amount ?? 0;
-  const averageOrderValue = Math.round(totalTx._avg.amount ?? 0);
+  const totalRevenue = totalTx?._sum?.amount ?? 0;
+  const averageOrderValue = Math.round(totalTx?._avg?.amount ?? 0);
 
   return {
     totalRevenue,
@@ -563,73 +666,6 @@ export const getAnalytics = async (userId: string) => {
 // Transactions / Earnings
 // ─────────────────────────────────────────────────────────────────────────────
 
-const formatVendorTx = (tx: any) => {
-  const isCredit = tx.type === "payment";
-  const absAmount = Math.abs(tx.amount);
-  return {
-    id: tx.id,
-    type: tx.type,
-    category: tx.category,
-    title: tx.title,
-    status: tx.status,
-    reference: tx.reference ?? null,
-    amount: tx.amount,
-    formattedAmount: `${isCredit ? "+" : "-"}₦${absAmount.toLocaleString()}`,
-    icon: isCredit ? "bag-outline" : "arrow-up-circle-outline",
-    iconBg: isCredit ? "#34C759" : "#FF3B30",
-    date: tx.createdAt.toISOString(),
-    formattedDate: new Date(tx.createdAt).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }),
-    formattedTime: new Date(tx.createdAt).toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-  };
-};
-
-export const getEarningsSummary = async (userId: string) => {
-  const vendor = await _requireVendor(userId);
-
-  const [earned, withdrawn, pending, recentTxs, commissionRate] =
-    await Promise.all([
-      prisma.vendorTransaction.aggregate({
-        where: { vendorId: vendor.id, type: "payment", status: "completed" },
-        _sum: { amount: true },
-      }),
-      prisma.vendorTransaction.aggregate({
-        where: { vendorId: vendor.id, type: "withdrawal", status: "completed" },
-        _sum: { amount: true },
-      }),
-      prisma.vendorTransaction.aggregate({
-        where: { vendorId: vendor.id, type: "withdrawal", status: "pending" },
-        _sum: { amount: true },
-      }),
-      prisma.vendorTransaction.findMany({
-        where: { vendorId: vendor.id },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-      }),
-      cfg.fees.vendorCommission(),
-    ]);
-
-  const totalEarned = earned._sum.amount ?? 0;
-  const totalWithdrawn = withdrawn._sum.amount ?? 0;
-  const pendingPayout = pending._sum.amount ?? 0;
-  const available = Math.max(0, totalEarned - totalWithdrawn - pendingPayout);
-
-  return {
-    totalEarned,
-    totalWithdrawn,
-    availableBalance: available,
-    pendingBalance: pendingPayout,
-    commissionRate, // e.g. 0.10 — platform takes 10% of each order
-    recentTransactions: recentTxs.map(formatVendorTx),
-  };
-};
-
 export const getVendorTransactions = async (
   userId: string,
   query: PaginationQuery & { type?: string },
@@ -637,10 +673,14 @@ export const getVendorTransactions = async (
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  const validTypes = ["payment", "withdrawal"];
+  // Expanded to include refund and order types based on design
+  const validTypes = ["payment", "withdrawal", "refund", "order"];
+
   const typeFilter =
-    query.type && query.type !== "all" && validTypes.includes(query.type)
-      ? (query.type as any)
+    query.type &&
+    query.type !== "all" &&
+    validTypes.includes(query.type.toLowerCase())
+      ? (query.type.toLowerCase() as any)
       : undefined;
 
   const where = {
@@ -649,16 +689,28 @@ export const getVendorTransactions = async (
   };
 
   const [transactions, total] = await Promise.all([
-    prisma.vendorTransaction.findMany({
+    prisma.transaction.findMany({
       where,
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
     }),
-    prisma.vendorTransaction.count({ where }),
+    prisma.transaction.count({ where }),
   ]);
 
-  return { transactions, meta: buildMeta(total, page, limit) };
+  // We map the database records to the Transaction interface here
+  const formattedTransactions = transactions.map((tx) => ({
+    ...tx,
+    formattedAmount: `₦${tx.amount.toLocaleString()}`,
+    // Ensure colors match the UI design provided in images
+    iconBg:
+      tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
+  }));
+
+  return {
+    transactions: formattedTransactions,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getVendorTransactionById = async (
@@ -666,202 +718,195 @@ export const getVendorTransactionById = async (
   txId: string,
 ) => {
   const vendor = await _requireVendor(userId);
-  const tx = await prisma.vendorTransaction.findFirst({
-    where: { id: txId, vendorId: vendor.id },
-  });
-  if (!tx) throw AppError.notFound("Transaction");
-  return tx;
-};
 
-export const requestPayout = async (
-  userId: string,
-  amount: number,
-  bankId: string,
-): Promise<{ success: boolean }> => {
-  const vendor = await _requireVendor(userId);
-  const summary = await getEarningsSummary(userId);
-
-  if (summary.availableBalance < amount) {
-    throw AppError.badRequest("Insufficient available balance.");
-  }
-
-  const bank = await prisma.vendorBankAccount.findFirst({
-    where: { id: bankId, vendorId: vendor.id },
-  });
-  if (!bank) throw AppError.notFound("Bank account");
-
-  await prisma.vendorTransaction.create({
-    data: {
+  const tx = await prisma.transaction.findFirst({
+    where: {
+      id: txId,
       vendorId: vendor.id,
-      type: "withdrawal",
-      category: "payout",
-      title: `Bank Transfer - ${bank.bank}`,
-      amount,
-      status: "completed",
     },
   });
 
-  return { success: true };
+  if (!tx) throw AppError.notFound("Transaction record not found");
+
+  // Logic to calculate fees/net if not already persisted in DB
+  const subtotal = tx.subtotal ?? tx.amount / 0.9;
+  const fee = tx.fee ?? subtotal * 0.1;
+
+  return {
+    ...tx,
+    subtotal,
+    fee,
+    // Formatting dates for the "Credited On" and "Order Date" rows
+    formattedDate: tx.createdAt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    }),
+    formattedTime: tx.createdAt.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }),
+    creditDate: tx.updatedAt.toLocaleString("en-US"),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor Onboarding — per-step save + resume
 // ─────────────────────────────────────────────────────────────────────────────
 
+// src/services/vendor.service.ts
+
 export const getVendorOnboardingState = async (userId: string) => {
-  const vendor = await _requireVendor(userId);
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { userId },
+    include: {
+      user: true,
+      bankAccounts: { where: { isPrimary: true }, take: 1 },
+      schedules: true,
+    },
+  });
 
-  const [bank, schedules] = await Promise.all([
-    prisma.vendorBankAccount.findFirst({
-      where: { vendorId: vendor.id },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.storeSchedule.findMany({ where: { vendorId: vendor.id } }),
-  ]);
+  if (!vendor) throw AppError.notFound("Vendor profile not found");
 
-  const step1Done = !!(vendor.storeName && vendor.address);
-  const step2Done = !!vendor.logoUrl;
-  const step3Done = !!bank;
-  const step4Done = schedules.length > 0;
+  const bank = vendor.bankAccounts[0];
+
+  const step1Done = !!(
+    vendor.storeName &&
+    vendor.address &&
+    vendor.lat &&
+    vendor.lng
+  );
+  const step2Done = !!(vendor.logoUrl && vendor.bannerUrl && vendor.schedules);
+  const step3Done = !!(
+    vendor.documentUrl &&
+    vendor.documentType &&
+    vendor.cacUrl
+  ); // Matches Store Details2.png
+  const step4Done = !!bank;
 
   let resumeStep = 1;
   if (!step1Done) resumeStep = 1;
   else if (!step2Done) resumeStep = 2;
   else if (!step3Done) resumeStep = 3;
   else if (!step4Done) resumeStep = 4;
-  else resumeStep = 5; // all done → review
+  else resumeStep = 5;
 
   const doneCount = [step1Done, step2Done, step3Done, step4Done].filter(
     Boolean,
   ).length;
-  const setupProgress = Math.round((doneCount / 4) * 100);
 
   return {
     resumeStep,
-    setupProgress,
+    setupProgress: Math.round((doneCount / 4) * 100),
     stepsComplete: { step1Done, step2Done, step3Done, step4Done },
     storeName: vendor.storeName,
-    address: vendor.address ?? null,
-    description: vendor.description ?? null,
-    logoUrl: vendor.logoUrl ?? null,
-    bannerUrl: vendor.bannerUrl ?? null,
-    documentType: (vendor as any).documentType ?? null,
-    documentUrl: (vendor as any).documentUrl ?? null,
-    storeStatus: vendor.storeStatus,
-    schedules: schedules.map((s) => ({
+    address: vendor.address || null,
+    lat: vendor.lat || null,
+    lng: vendor.lng || null,
+    description: vendor.description,
+    logoUrl: vendor.logoUrl,
+    bannerUrl: vendor.bannerUrl,
+    documentType: (vendor as any).documentType,
+    documentUrl: (vendor as any).documentUrl,
+    cacUrl: (vendor as any).cacUrl,
+    schedules: vendor.schedules.map((s) => ({
       day: s.day,
       openTime: s.openTime,
       closeTime: s.closeTime,
     })),
     bank: bank
-      ? { bank: bank.bank, accountNumber: bank.accountNumber, name: bank.name }
+      ? {
+          bank: bank.bankName,
+          accountNumber: bank.accountNumber,
+          name: bank.accountName,
+          bankCode: bank.bankCode,
+        }
       : null,
   };
 };
 
 export const saveVendorOnboardingStep = async (
   userId: string,
-  step: number,
-  data: Record<string, unknown>,
-): Promise<{ setupProgress: number }> => {
-  const vendor = await _requireVendor(userId);
+  step: number | string,
+  data: any,
+) => {
+  const vendor = await prisma.vendorProfile.findUnique({ where: { userId } });
+  if (!vendor) throw AppError.notFound("Vendor");
 
-  const ALLOWED: Record<number, string[]> = {
-    1: ["storeName", "address", "description", "lat", "lng"],
-    2: ["logoUrl", "bannerUrl"],
-  };
+  if (step === 1 || step === 1.5) {
+    const { storeName, address, description, lat, lng } = data;
+    await prisma.vendorProfile.update({
+      where: { id: vendor.id },
+      data: { storeName, address, description, lat, lng },
+    });
 
-  if (step === 3) {
-    // Save bank account — upsert so re-submitting the same step doesn't duplicate
-    const { bank, name, accountNumber, bankCode } = data as any;
-    if (bank && name && accountNumber) {
-      const existing = await prisma.vendorBankAccount.findFirst({
-        where: { vendorId: vendor.id },
+    if (address && lat && lng) {
+      // Update the VendorProfile coordinates and address string directly
+      // Address model is no longer used.
+      await prisma.vendorProfile.update({
+        where: { userId },
+        data: {
+          address: address, // vendor.address
+          lat: lat, // vendor.lat
+          lng: lng, // vendor.lng
+        },
       });
-      if (existing) {
-        await prisma.vendorBankAccount.update({
-          where: { id: existing.id },
-          data: {
-            bank,
-            name,
-            accountNumber,
-            bankCode: bankCode ?? existing.bankCode,
-          },
+    }
+  } else if (step === 2) {
+    // Branding & Schedule
+    const { logoUrl, bannerUrl, schedules } = data;
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Update Profile Images
+      await tx.vendorProfile.update({
+        where: { id: vendor.id },
+        data: { logoUrl, bannerUrl },
+      });
+
+      // 2. Update Schedules (Delete existing and recreate)
+      if (schedules && Array.isArray(schedules)) {
+        await tx.storeSchedule.deleteMany({
+          where: { vendorId: vendor.id },
         });
-      } else {
-        await prisma.vendorBankAccount.create({
-          data: {
+
+        await tx.storeSchedule.createMany({
+          data: schedules.map((s: any) => ({
             vendorId: vendor.id,
-            isPrimary: true,
-            bank,
-            name,
-            accountNumber,
-            bankCode,
-          },
+            day: s.day,
+            openTime: s.openTime,
+            closeTime: s.closeTime,
+          })),
         });
       }
-    }
+    });
+  } else if (step === 3) {
+    await prisma.vendorProfile.update({
+      where: { id: vendor.id },
+      data: {
+        documentType: data.idType,
+        documentUrl: data.docUrl,
+        cacUrl: data.cacUrl,
+      },
+    });
   } else if (step === 4) {
-    // Save store schedules
-    const schedules =
-      (data.schedules as {
-        day: string;
-        openTime: string;
-        closeTime: string;
-      }[]) ?? [];
-    if (schedules.length > 0) {
-      await prisma.$transaction(
-        schedules.map((s) =>
-          prisma.storeSchedule.upsert({
-            where: { vendorId_day: { vendorId: vendor.id, day: s.day } },
-            create: {
-              vendorId: vendor.id,
-              day: s.day,
-              openTime: s.openTime,
-              closeTime: s.closeTime,
-            },
-            update: { openTime: s.openTime, closeTime: s.closeTime },
-          }),
-        ),
-      );
-    }
-  } else {
-    const allowed = ALLOWED[step] ?? [];
-    const safeData = Object.fromEntries(
-      Object.entries(data).filter(([k]) => allowed.includes(k)),
-    );
-    if (Object.keys(safeData).length > 0) {
-      await prisma.vendorProfile.update({
-        where: { id: vendor.id },
-        data: safeData as any,
-      });
-    }
+    const { bank, name, accountNumber, bankCode } = data;
+    // This will now work because frontend sends 'bank' instead of 'bankName'
+    await prisma.bankAccount.upsert({
+      where: { vendorId_accountNumber: { vendorId: vendor.id, accountNumber } },
+      create: {
+        vendorId: vendor.id,
+        bankName: bank,
+        accountName: name,
+        accountNumber,
+        bankCode,
+        isPrimary: true,
+      },
+      update: { bankName: bank, accountName: name, accountNumber: bankCode },
+    });
   }
 
-  // Recalculate progress across all 4 steps
-  const [updated, scheduleCount] = await Promise.all([
-    prisma.vendorProfile.findUnique({
-      where: { id: vendor.id },
-      include: { vendorBankAccounts: true },
-    }),
-    prisma.storeSchedule.count({ where: { vendorId: vendor.id } }),
-  ]);
-
-  const doneCount = [
-    !!(updated?.storeName && updated?.address),
-    !!updated?.logoUrl,
-    (updated?.vendorBankAccounts.length ?? 0) > 0,
-    scheduleCount > 0,
-  ].filter(Boolean).length;
-
-  const setupProgress = Math.round((doneCount / 4) * 100);
-
-  await prisma.vendorProfile.update({
-    where: { id: vendor.id },
-    data: { setupProgress } as any,
-  });
-
-  return { setupProgress };
+  return getVendorOnboardingState(userId);
 };
 
 export const submitVendorOnboarding = async (
@@ -888,7 +933,7 @@ export const submitVendorOnboarding = async (
 
 export const getVendorBankAccounts = async (userId: string) => {
   const vendor = await _requireVendor(userId);
-  const accounts = await prisma.vendorBankAccount.findMany({
+  const accounts = await prisma.bankAccount.findMany({
     where: { vendorId: vendor.id },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
   });
@@ -901,18 +946,27 @@ export const getVendorBankAccounts = async (userId: string) => {
 export const saveVendorBankAccount = async (
   userId: string,
   data: {
-    bank: string;
-    name: string;
+    bank: string; // Maps to bankName
+    name: string; // Maps to accountName
     accountNumber: string;
-    bankCode?: string;
+    bankCode: string;
   },
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
-  const count = await prisma.vendorBankAccount.count({
+
+  const count = await prisma.bankAccount.count({
     where: { vendorId: vendor.id },
   });
-  await prisma.vendorBankAccount.create({
-    data: { vendorId: vendor.id, isPrimary: count === 0, ...data },
+
+  await prisma.bankAccount.create({
+    data: {
+      vendorId: vendor.id,
+      isPrimary: count === 0,
+      bankName: data.bank, // Corrected field name
+      accountName: data.name, // Corrected field name
+      accountNumber: data.accountNumber,
+      bankCode: data.bankCode,
+    },
   });
 };
 
@@ -922,11 +976,11 @@ export const setVendorPrimaryBank = async (
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
   await prisma.$transaction([
-    prisma.vendorBankAccount.updateMany({
+    prisma.bankAccount.updateMany({
       where: { vendorId: vendor.id },
       data: { isPrimary: false },
     }),
-    prisma.vendorBankAccount.update({
+    prisma.bankAccount.update({
       where: { id: bankId },
       data: { isPrimary: true },
     }),
@@ -938,11 +992,11 @@ export const deleteVendorBankAccount = async (
   bankId: string,
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
-  const account = await prisma.vendorBankAccount.findFirst({
+  const account = await prisma.bankAccount.findFirst({
     where: { id: bankId, vendorId: vendor.id },
   });
   if (!account) throw AppError.notFound("Bank account");
-  await prisma.vendorBankAccount.delete({ where: { id: bankId } });
+  await prisma.bankAccount.delete({ where: { id: bankId } });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -952,6 +1006,7 @@ export const deleteVendorBankAccount = async (
 export const getPromotions = async (userId: string, status?: string) => {
   const vendor = await _requireVendor(userId);
   const now = new Date();
+
   const where = {
     vendorId: vendor.id,
     ...(status === "active" ? { isActive: true, endDate: { gte: now } } : {}),
@@ -959,15 +1014,22 @@ export const getPromotions = async (userId: string, status?: string) => {
       ? { OR: [{ isActive: false }, { endDate: { lt: now } }] }
       : {}),
   };
-  return prisma.promotion.findMany({ where, orderBy: { createdAt: "desc" } });
+
+  return prisma.promotion.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
 };
 
 export const getPromotionById = async (userId: string, promoId: string) => {
   const vendor = await _requireVendor(userId);
+
   const promo = await prisma.promotion.findFirst({
     where: { id: promoId, vendorId: vendor.id },
   });
+
   if (!promo) throw AppError.notFound("Promotion");
+
   return promo;
 };
 
@@ -983,10 +1045,21 @@ export const createPromotion = async (
     discountValue?: number;
     promoCode?: string;
     minimumOrder?: number;
+    // New fields
+    appliesTo: "all" | "specific";
+    productIds?: string[];
   },
 ) => {
   const vendor = await _requireVendor(userId);
-  return prisma.promotion.create({ data: { vendorId: vendor.id, ...data } });
+
+  return prisma.promotion.create({
+    data: {
+      ...data,
+      vendorId: vendor.id,
+      // If appliesTo is 'all', we ensure productIds is an empty array
+      productIds: data.appliesTo === "all" ? [] : data.productIds || [],
+    },
+  });
 };
 
 export const updatePromotion = async (
@@ -1004,16 +1077,30 @@ export const updatePromotion = async (
     promoCode: string;
     minimumOrder: number;
     maxUses: number;
+    // New fields for editing
+    appliesTo: "all" | "specific";
+    productIds: string[];
   }>,
 ) => {
   const vendor = await _requireVendor(userId);
+
   const existing = await prisma.promotion.findFirst({
     where: { id: promoId, vendorId: vendor.id },
   });
-  if (!existing) throw AppError.notFound("Promotion");
-  return prisma.promotion.update({ where: { id: promoId }, data });
-};
 
+  if (!existing) throw AppError.notFound("Promotion");
+
+  // Logic to handle product scope switching
+  const updatedData = { ...data };
+  if (data.appliesTo === "all") {
+    updatedData.productIds = [];
+  }
+
+  return prisma.promotion.update({
+    where: { id: promoId },
+    data: updatedData,
+  });
+};
 export const deletePromotion = async (
   userId: string,
   promoId: string,
@@ -1133,24 +1220,45 @@ export const getVendorReferralStats = async (userId: string) => {
     where: { id: userId },
     select: { referralCode: true },
   });
+
   if (!user) throw AppError.notFound("User");
 
   const referrals = await prisma.referral.findMany({
     where: { referrerId: userId },
-    include: { referee: { select: { fullName: true, imageUrl: true } } },
+    include: {
+      referee: {
+        select: {
+          fullName: true,
+          imageUrl: true,
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 
   const earned = await prisma.transaction.aggregate({
-    where: { userId, type: "referral_bonus", status: "successful" },
+    where: {
+      userId,
+      type: "referral",
+      status: "completed",
+    },
     _sum: { amount: true },
   });
 
   return {
     referralCode: user.referralCode,
     totalReferrals: referrals.length,
-    amountEarned: earned._sum.amount ?? 0,
-    recentReferrals: referrals.slice(0, 10),
+    amountEarned: earned._sum?.amount ?? 0,
+    // Map the data to match the VendorReferralStats interface exactly
+    recentReferrals: referrals.slice(0, 10).map((ref) => ({
+      id: ref.id,
+      status: ref.status, // Ensure your DB uses 'PENDING' | 'COMPLETED'
+      createdAt: format(new Date(ref.createdAt), "dd MMM yyyy"), // e.g., "12 Jun 2025"
+      referee: {
+        fullName: ref.referee.fullName,
+        imageUrl: ref.referee.imageUrl,
+      },
+    })),
   };
 };
 
@@ -1232,7 +1340,7 @@ export const getVendorBankAccountById = async (
   bankId: string,
 ) => {
   const vendor = await _requireVendor(userId);
-  const account = await prisma.vendorBankAccount.findFirst({
+  const account = await prisma.bankAccount.findFirst({
     where: { id: bankId, vendorId: vendor.id },
   });
   if (!account) throw AppError.notFound("Bank account");
@@ -1250,11 +1358,11 @@ export const updateVendorBankAccount = async (
   },
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
-  const account = await prisma.vendorBankAccount.findFirst({
+  const account = await prisma.bankAccount.findFirst({
     where: { id: bankId, vendorId: vendor.id },
   });
   if (!account) throw AppError.notFound("Bank account");
-  await prisma.vendorBankAccount.update({ where: { id: bankId }, data });
+  await prisma.bankAccount.update({ where: { id: bankId }, data });
 };
 
 export const getRiderLocationForOrder = async (

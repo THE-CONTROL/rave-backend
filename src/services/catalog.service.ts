@@ -15,151 +15,6 @@ import { cfg } from "./config.service";
 // Restaurants (public)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getNearbyRestaurants = async (
-  query: PaginationQuery & {
-    radiusKm?: string;
-    isOpen?: string;
-    hasFreeDelivery?: string;
-    minRating?: string;
-  },
-  userId?: string | null,
-) => {
-  const { page, limit, skip } = parsePagination(query);
-  const radiusKm = query.radiusKm ? parseFloat(query.radiusKm) : 10;
-
-  // ── User coordinates from default address ─────────────────────────────────
-  let userLat: number | null = null;
-  let userLng: number | null = null;
-
-  if (userId) {
-    const defaultAddress = await prisma.address.findFirst({
-      where: { userId, isDefault: true },
-      select: { lat: true, lng: true },
-    });
-    if (!defaultAddress?.lat || !defaultAddress?.lng) {
-      const anyAddress = await prisma.address.findFirst({
-        where: { userId, lat: { not: null }, lng: { not: null } },
-        select: { lat: true, lng: true },
-        orderBy: { createdAt: "desc" },
-      });
-      userLat = anyAddress?.lat ?? null;
-      userLng = anyAddress?.lng ?? null;
-    } else {
-      userLat = defaultAddress.lat;
-      userLng = defaultAddress.lng;
-    }
-
-    // Authenticated users must have a geocoded address — we cannot sort by
-    // proximity without coordinates, and showing an unordered list is misleading.
-    if (userLat === null || userLng === null) {
-      throw AppError.badRequest(
-        "Please add a delivery address before browsing nearby restaurants.",
-      );
-    }
-  }
-
-  // ── User's usual vendors ───────────────────────────────────────────────────
-  const usualVendorIds = new Set<string>();
-  if (userId) {
-    const usualOrders = await prisma.order.findMany({
-      where: { userId, status: "completed" },
-      select: { vendorId: true },
-      distinct: ["vendorId"],
-      orderBy: { createdAt: "desc" },
-      take: 5,
-    });
-    usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
-  }
-
-  // ── Build filter where clause ──────────────────────────────────────────────
-  const where: any = {
-    // storeStatus: "open",
-    // ...(query.isOpen === "true" ? { isOpen: true } : {}),
-  };
-
-  const vendors = await prisma.vendorProfile.findMany({
-    where,
-    select: {
-      id: true,
-      storeName: true,
-      logoUrl: true,
-      bannerUrl: true,
-      isOpen: true,
-      averageRating: true,
-      totalReviews: true,
-      // hasFreeDelivery: true,
-      address: true,
-      lat: true,
-      lng: true,
-      positiveReviews: true,
-      // deliveryTimeMin: true,
-      hoursSummary: true,
-      favoriteRestaurants: userId
-        ? { where: { userId }, select: { userId: true } }
-        : false,
-    },
-  });
-
-  // ── Attach distance ────────────────────────────────────────────────────────
-  const withDistance = vendors.map((v) => {
-    const distanceKm =
-      userLat !== null && userLng !== null && v.lat && v.lng
-        ? haversineKm(userLat, userLng, v.lat, v.lng)
-        : null;
-    return { ...v, distanceKm };
-  });
-
-  // ── Filter by radius when coords available ─────────────────────────────────
-  const filtered =
-    userLat !== null
-      ? withDistance.filter(
-          (v) => v.distanceKm === null || v.distanceKm <= radiusKm,
-        )
-      : withDistance;
-
-  // ── Sort: nearest first, then by rating ───────────────────────────────────
-  const sorted = filtered.sort((a, b) => {
-    if (a.distanceKm !== null && b.distanceKm !== null)
-      return a.distanceKm - b.distanceKm;
-    return b.averageRating - a.averageRating;
-  });
-
-  const total = sorted.length;
-  const paginated = sorted.slice(skip, skip + limit);
-  const deliveryBase = await cfg.fees.deliveryBase();
-
-  return {
-    vendors: paginated.map((v) => ({
-      id: v.id,
-      name: v.storeName,
-      image: v.bannerUrl,
-      logo: v.logoUrl,
-      rating: v.averageRating,
-      reviewCount: v.totalReviews,
-      isOpen: v.isOpen,
-      address: v.address,
-      distanceKm: v.distanceKm,
-      distanceLabel:
-        v.distanceKm !== null ? formatDistance(v.distanceKm) : null,
-      deliveryTime:
-        v.distanceKm !== null
-          ? `${estimateEtaMinutes(v.distanceKm)}–${estimateEtaMinutes(v.distanceKm) + 10} mins`
-          : `${30} mins`,
-      deliveryFee: deliveryBase,
-      positiveReviews: v.positiveReviews,
-      hasFreeDelivery: false,
-      closesIn: v.hoursSummary ?? null,
-      isYourUsual: usualVendorIds.has(v.id),
-      isFavorite: userId ? (v.favoriteRestaurants as any[])?.length > 0 : false,
-    })),
-    meta: buildMeta(total, page, limit),
-    locationUsed:
-      userLat !== null
-        ? { lat: userLat, lng: userLng, source: "saved_address" }
-        : null,
-  };
-};
-
 export const getRestaurantDetails = async (
   vendorId: string,
   userId?: string,
@@ -167,10 +22,16 @@ export const getRestaurantDetails = async (
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
     include: {
-      storeSchedules: true,
-      _count: { select: { menuItems: true, reviewsReceived: true } },
+      schedules: true,
+      _count: {
+        select: {
+          menuItems: true,
+          reviewsReceived: true,
+        },
+      },
     },
   });
+
   if (!vendor) throw AppError.notFound("Restaurant");
 
   let isFavorite = false;
@@ -191,6 +52,7 @@ export const getRestaurantMenu = async (
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
   });
+
   if (!vendor) throw AppError.notFound("Restaurant");
 
   const items = await prisma.menuItem.findMany({
@@ -199,7 +61,10 @@ export const getRestaurantMenu = async (
       isActive: true,
       ...(categoryId ? { categories: { some: { categoryId } } } : {}),
     },
-    include: { categories: { include: { category: true } } },
+    include: {
+      categories: { include: { category: true } },
+      images: true,
+    },
     orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
   });
 
@@ -257,51 +122,6 @@ export const getRestaurantReviews = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // Products (menu items - public)
 // ─────────────────────────────────────────────────────────────────────────────
-
-export const getProductDetails = async (
-  menuItemId: string,
-  userId?: string,
-) => {
-  const item = await prisma.menuItem.findUnique({
-    where: { id: menuItemId, isActive: true },
-    include: {
-      vendor: {
-        select: {
-          id: true,
-          storeName: true,
-          logoUrl: true,
-          isOpen: true,
-          averageRating: true,
-        },
-      },
-      categories: { include: { category: true } },
-      customGroups: { include: { options: true } },
-    },
-  });
-  if (!item) throw AppError.notFound("Product");
-
-  let isFavorite = false;
-  if (userId) {
-    const fav = await prisma.favoriteProduct.findUnique({
-      where: { userId_menuItemId: { userId, menuItemId } },
-    });
-    isFavorite = !!fav;
-  }
-
-  // Reviews now store menuItemIds as a plain String[] — use `has` filter
-  const reviewStats = await prisma.review.aggregate({
-    where: { menuItemIds: { has: menuItemId } },
-    _avg: { foodRating: true },
-    _count: { id: true },
-  });
-
-  return {
-    ...item,
-    isFavorite,
-    rating: parseFloat((reviewStats._avg.foodRating ?? 0).toFixed(1)),
-    reviewCount: reviewStats._count.id,
-  };
-};
 
 export const getProductReviews = async (
   menuItemId: string,
@@ -447,132 +267,6 @@ export const getItemsByCategory = async (
 // Breakfast picks & home screen helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getBreakfastPicks = async (
-  opts: { userId?: string; radiusKm?: string } = {},
-) => {
-  const radiusKm = opts.radiusKm ? parseFloat(opts.radiusKm) : 10;
-
-  // ── Resolve user coordinates from saved address (same as getNearbyRestaurants) ──
-  let userLat: number | null = null;
-  let userLng: number | null = null;
-
-  if (opts.userId) {
-    const defaultAddress = await prisma.address.findFirst({
-      where: { userId: opts.userId, isDefault: true },
-      select: { lat: true, lng: true },
-    });
-    if (!defaultAddress?.lat || !defaultAddress?.lng) {
-      const anyAddress = await prisma.address.findFirst({
-        where: { userId: opts.userId, lat: { not: null }, lng: { not: null } },
-        select: { lat: true, lng: true },
-        orderBy: { createdAt: "desc" },
-      });
-      userLat = anyAddress?.lat ?? null;
-      userLng = anyAddress?.lng ?? null;
-    } else {
-      userLat = defaultAddress.lat;
-      userLng = defaultAddress.lng;
-    }
-
-    if (userLat === null || userLng === null) {
-      throw AppError.badRequest(
-        "Please add a delivery address before browsing nearby restaurants.",
-      );
-    }
-  }
-
-  const deliveryBase = await cfg.fees.deliveryBase();
-
-  const items = await prisma.menuItem.findMany({
-    where: {
-      isActive: true,
-      vendor: { isOpen: true, storeStatus: "open" },
-      categories: {
-        some: {
-          category: { name: { contains: "Breakfast", mode: "insensitive" } },
-        },
-      },
-    },
-    include: {
-      vendor: {
-        select: {
-          id: true,
-          storeName: true,
-          logoUrl: true,
-          isOpen: true,
-          averageRating: true,
-          totalReviews: true,
-          // hasFreeDelivery: true,
-          // deliveryTimeMin: true,
-          lat: true,
-          lng: true,
-        },
-      },
-      categories: { include: { category: true } },
-      favorites: opts.userId ? { where: { userId: opts.userId } } : false,
-      _count: { select: { orderItems: true } },
-    },
-    orderBy: [{ isBestSeller: "desc" }],
-    take: 50, // fetch more so we have enough after proximity filter
-  });
-
-  // ── Filter by radius if user location is known ────────────────────────────
-  const filtered =
-    userLat !== null && userLng !== null
-      ? items.filter((item) => {
-          if (!item.vendor.lat || !item.vendor.lng) return true;
-          return (
-            haversineKm(userLat!, userLng!, item.vendor.lat, item.vendor.lng) <=
-            radiusKm
-          );
-        })
-      : items;
-
-  // ── Sort: bestsellers first, then by proximity ────────────────────────────
-  const sorted = filtered.sort((a, b) => {
-    if (a.isBestSeller && !b.isBestSeller) return -1;
-    if (!a.isBestSeller && b.isBestSeller) return 1;
-    if (userLat !== null && userLng !== null) {
-      const dA =
-        a.vendor.lat && a.vendor.lng
-          ? haversineKm(userLat, userLng, a.vendor.lat, a.vendor.lng)
-          : 999;
-      const dB =
-        b.vendor.lat && b.vendor.lng
-          ? haversineKm(userLat, userLng, b.vendor.lat, b.vendor.lng)
-          : 999;
-      return dA - dB;
-    }
-    return b._count.orderItems - a._count.orderItems;
-  });
-
-  return sorted.slice(0, 20).map((item) => ({
-    id: item.id,
-    name: item.name,
-    description: item.description,
-    price: item.price,
-    imageUrl: item.imageUrl,
-    isBestSeller: item.isBestSeller,
-    calories: item.calories,
-    prepTime: item.prepTime,
-    serves: item.serves,
-    orderCount: item._count.orderItems,
-    isFavorite: opts.userId ? (item.favorites as any[])?.length > 0 : false,
-    categories: item.categories.map((c) => c.category.name),
-    vendor: {
-      id: item.vendor.id,
-      storeName: item.vendor.storeName,
-      logoUrl: item.vendor.logoUrl,
-      isOpen: item.vendor.isOpen,
-      averageRating: item.vendor.averageRating,
-      totalReviews: item.vendor.totalReviews,
-      hasFreeDelivery: false,
-      deliveryFee: deliveryBase,
-      deliveryTime: "30–40 mins",
-    },
-  }));
-};
-
 export const getRatingDistribution = async (vendorId: string) => {
   const reviews = await prisma.review.findMany({
     where: { vendorId },
@@ -588,5 +282,370 @@ export const getRatingDistribution = async (vendorId: string) => {
   return {
     total: reviews.length,
     distribution,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Restaurants (public)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getNearbyRestaurants = async (
+  query: PaginationQuery & {
+    radiusKm?: string;
+    isOpen?: string;
+    minRating?: string;
+  },
+  userId?: string | null,
+) => {
+  const { page, limit, skip } = parsePagination(query);
+  const radiusKm = query.radiusKm ? parseFloat(query.radiusKm) : 10;
+
+  // ── User coordinates from default location ─────────────────────────────────
+  let userLat: number | null = null;
+  let userLng: number | null = null;
+
+  if (userId) {
+    const defaultLocation = await prisma.savedLocation.findFirst({
+      where: { userId, isDefault: true },
+      select: { latitude: true, longitude: true },
+    });
+
+    const locationSource =
+      defaultLocation ||
+      (await prisma.savedLocation.findFirst({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+      }));
+
+    userLat = locationSource?.latitude ?? null;
+    userLng = locationSource?.longitude ?? null;
+
+    if (userLat === null || userLng === null) {
+      throw AppError.badRequest("Please add a delivery location first.");
+    }
+  }
+
+  // ── User's usual vendors ───────────────────────────────────────────────────
+  const usualVendorIds = new Set<string>();
+  if (userId) {
+    const usualOrders = await prisma.order.findMany({
+      where: { userId, status: "completed" },
+      select: { vendorId: true },
+      distinct: ["vendorId"],
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    });
+    usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
+  }
+
+  // ── Build filter where clause ──────────────────────────────────────────────
+  const where: any = {
+    ...(query.isOpen === "true" ? { isOpen: true } : {}),
+  };
+
+  const vendors = await prisma.vendorProfile.findMany({
+    where,
+    select: {
+      id: true,
+      storeName: true,
+      logoUrl: true,
+      bannerUrl: true,
+      isOpen: true,
+      averageRating: true,
+      totalReviews: true,
+      address: true,
+      lat: true,
+      lng: true,
+      positiveReviews: true,
+      hoursSummary: true,
+    },
+  });
+
+  const withDistance = vendors.map((v) => {
+    const distanceKm =
+      userLat !== null && userLng !== null && v.lat && v.lng
+        ? haversineKm(userLat, userLng, v.lat, v.lng)
+        : null;
+    return { ...v, distanceKm };
+  });
+
+  const filtered =
+    userLat !== null
+      ? withDistance.filter(
+          (v) => v.distanceKm === null || v.distanceKm <= radiusKm,
+        )
+      : withDistance;
+
+  // Sort: Nearest first, then best rated
+  const sorted = filtered.sort((a, b) => {
+    if (
+      a.distanceKm !== null &&
+      b.distanceKm !== null &&
+      Math.abs(a.distanceKm - b.distanceKm) > 0.1
+    )
+      return a.distanceKm - b.distanceKm;
+    return b.averageRating - a.averageRating;
+  });
+
+  const total = sorted.length;
+  const paginated = sorted.slice(skip, skip + limit);
+
+  return {
+    vendors: paginated.map((v) => ({
+      id: v.id,
+      name: v.storeName,
+      image: v.bannerUrl,
+      logo: v.logoUrl,
+      rating: v.averageRating,
+      reviewCount: v.totalReviews,
+      isOpen: v.isOpen,
+      address: v.address,
+      distanceKm: v.distanceKm,
+      distanceLabel:
+        v.distanceKm !== null ? formatDistance(v.distanceKm) : null,
+      deliveryTime:
+        v.distanceKm !== null
+          ? `${estimateEtaMinutes(v.distanceKm)} mins`
+          : "30 mins",
+      positiveReviews: v.positiveReviews,
+      closesIn: v.hoursSummary,
+      isYourUsual: usualVendorIds.has(v.id),
+    })),
+    meta: buildMeta(total, page, limit),
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Products (menu items)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getProductDetails = async (
+  menuItemId: string,
+  userId?: string,
+) => {
+  const item = await prisma.menuItem.findUnique({
+    where: { id: menuItemId, isActive: true },
+    include: {
+      vendor: {
+        select: {
+          id: true,
+          storeName: true,
+          logoUrl: true,
+          isOpen: true,
+          averageRating: true,
+        },
+      },
+      images: true, // New relation for multiple images
+      categories: { include: { category: true } },
+      ingredients: true, // Now uses MenuItemIngredient model
+    },
+  });
+
+  if (!item) throw AppError.notFound("Product");
+
+  let isFavorite = false;
+  if (userId) {
+    const fav = await prisma.favoriteProduct.findUnique({
+      where: { userId_menuItemId: { userId, menuItemId } },
+    });
+    isFavorite = !!fav;
+  }
+
+  const reviewStats = await prisma.review.aggregate({
+    where: { menuItemIds: { has: menuItemId } },
+    _avg: { foodRating: true },
+    _count: { id: true },
+  });
+
+  // Map to frontend Product interface
+  return {
+    ...item,
+    imageUrl:
+      item.images.find((img) => img.isMain)?.url || item.images[0]?.url || null,
+    isFavorite,
+    rating: parseFloat((reviewStats._avg.foodRating ?? 0).toFixed(1)),
+    reviewCount: reviewStats._count.id,
+    ingredients: item.ingredients.map((ing) => ({
+      ...ing,
+      price: ing.isOptional ? ing.price : 0, // Ensure safety
+    })),
+  };
+};
+
+export const getBreakfastPicks = async (
+  opts: { userId?: string; radiusKm?: string } = {},
+) => {
+  const radiusKm = opts.radiusKm ? parseFloat(opts.radiusKm) : 10;
+  let userLat: number | null = null;
+  let userLng: number | null = null;
+
+  if (opts.userId) {
+    const loc = await prisma.savedLocation.findFirst({
+      where: { userId: opts.userId, isDefault: true },
+    });
+    userLat = loc?.latitude ?? null;
+    userLng = loc?.longitude ?? null;
+  }
+
+  const items = await prisma.menuItem.findMany({
+    where: {
+      isActive: true,
+      vendor: { isOpen: true },
+      categories: {
+        some: {
+          category: { name: { contains: "Breakfast", mode: "insensitive" } },
+        },
+      },
+    },
+    include: {
+      vendor: true,
+      images: { where: { isMain: true }, take: 1 },
+      favorites: opts.userId ? { where: { userId: opts.userId } } : false,
+      _count: { select: { orderItems: true } },
+    },
+    orderBy: { isBestSeller: "desc" },
+    take: 40,
+  });
+
+  const filtered =
+    userLat !== null && userLng !== null
+      ? items.filter(
+          (i) =>
+            !i.vendor.lat ||
+            haversineKm(
+              userLat!,
+              userLng!,
+              i.vendor.lat,
+              i.vendor.lng as number,
+            ) <= radiusKm,
+        )
+      : items;
+
+  return filtered.slice(0, 15).map((item) => ({
+    id: item.id,
+    name: item.name,
+    price: item.price,
+    images: item.images,
+    isBestSeller: item.isBestSeller,
+    isFavorite: opts.userId ? (item.favorites as any[])?.length > 0 : false,
+    vendor: {
+      id: item.vendor.id,
+      storeName: item.vendor.storeName,
+      averageRating: item.vendor.averageRating,
+    },
+  }));
+};
+
+export const getAllVendors = async (
+  query: PaginationQuery,
+  userId?: string | null,
+) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  // 1. Identify User's Usuals (Keep logic as it adds personalized context to the full list)
+  const usualVendorIds = new Set<string>();
+  if (userId) {
+    const usualOrders = await prisma.order.findMany({
+      where: { userId, status: "completed" },
+      select: { vendorId: true },
+      distinct: ["vendorId"],
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    });
+    usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
+  }
+
+  // 2. Fetch Everything (Empty where clause)
+  const where: any = {};
+
+  const [vendors, total] = await Promise.all([
+    prisma.vendorProfile.findMany({
+      where,
+      select: {
+        id: true,
+        storeName: true,
+        logoUrl: true,
+        bannerUrl: true,
+        isOpen: true,
+        averageRating: true,
+        totalReviews: true,
+        address: true,
+        positiveReviews: true,
+        hoursSummary: true,
+      },
+      orderBy: { averageRating: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.vendorProfile.count({ where }),
+  ]);
+
+  return {
+    data: {
+      vendors: vendors.map((v) => ({
+        id: v.id,
+        name: v.storeName,
+        image: v.bannerUrl,
+        logo: v.logoUrl,
+        rating: v.averageRating,
+        reviewCount: v.totalReviews,
+        isOpen: v.isOpen,
+        address: v.address,
+        positiveReviews: v.positiveReviews,
+        closesIn: v.hoursSummary,
+        isYourUsual: usualVendorIds.has(v.id),
+      })),
+    },
+    meta: buildMeta(total, page, limit),
+  };
+};
+
+export const getAllMenuItems = async (
+  query: PaginationQuery,
+  userId?: string | null,
+) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  // Fetch Everything (Empty where clause)
+  const where: any = {};
+
+  const [items, total] = await Promise.all([
+    prisma.menuItem.findMany({
+      where,
+      include: {
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            averageRating: true,
+          },
+        },
+        images: { where: { isMain: true }, take: 1 },
+        favorites: userId ? { where: { userId } } : false,
+      },
+      orderBy: { isBestSeller: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.menuItem.count({ where }),
+  ]);
+
+  return {
+    data: {
+      items: items.map((item) => ({
+        id: item.id,
+        name: item.name,
+        price: item.price,
+        images: item.images || null,
+        isBestSeller: item.isBestSeller,
+        isFavorite: userId ? (item.favorites as any[]).length > 0 : false,
+        vendor: {
+          id: item.vendor.id,
+          storeName: item.vendor.storeName,
+          averageRating: item.vendor.averageRating,
+        },
+      })),
+    },
+    meta: buildMeta(total, page, limit),
   };
 };

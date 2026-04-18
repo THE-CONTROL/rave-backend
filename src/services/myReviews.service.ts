@@ -16,7 +16,9 @@ export const getPendingReviews = async (userId: string) => {
     include: {
       items: {
         take: 1,
-        include: { menuItem: { select: { name: true, imageUrl: true, price: true } } },
+        include: {
+          menuItem: { select: { name: true, images: true, price: true } },
+        },
       },
       vendor: { select: { storeName: true } },
     },
@@ -31,7 +33,7 @@ export const getPendingReviews = async (userId: string) => {
       orderId: order.orderId,
       name: firstItem?.menuItem.name ?? "Order",
       price: order.totalAmount,
-      image: firstItem?.menuItem.imageUrl ?? null,
+      images: firstItem?.menuItem.images ?? null,
       vendor: order.vendor.storeName,
       qty: order.items.reduce((s, i) => s + i.qty, 0),
     };
@@ -50,7 +52,9 @@ export const getPastReviews = async (userId: string) => {
         include: {
           items: {
             take: 1,
-            include: { menuItem: { select: { name: true, imageUrl: true, price: true } } },
+            include: {
+              menuItem: { select: { name: true, images: true, price: true } },
+            },
           },
           vendor: { select: { storeName: true } },
         },
@@ -66,7 +70,7 @@ export const getPastReviews = async (userId: string) => {
       orderId: r.orderId,
       name: firstItem?.menuItem.name ?? "Order",
       price: r.order.totalAmount,
-      image: firstItem?.menuItem.imageUrl ?? null,
+      images: firstItem?.menuItem.images ?? null,
       vendor: r.order.vendor.storeName,
       qty: r.order.items.reduce((s, i) => s + i.qty, 0),
       restaurantRating: r.restaurantRating,
@@ -90,7 +94,9 @@ export const getReviewDetail = async (userId: string, reviewId: string) => {
       order: {
         include: {
           items: {
-            include: { menuItem: { select: { name: true, imageUrl: true, price: true } } },
+            include: {
+              menuItem: { select: { name: true, images: true, price: true } },
+            },
           },
           vendor: { select: { storeName: true, logoUrl: true } },
         },
@@ -148,7 +154,9 @@ export const getReviewOrderData = async (userId: string, orderId: string) => {
     where: { id: orderId, userId, status: "completed" },
     include: {
       items: {
-        include: { menuItem: { select: { name: true, imageUrl: true, price: true } } },
+        include: {
+          menuItem: { select: { name: true, images: true, price: true } },
+        },
       },
       vendor: { select: { storeName: true, logoUrl: true } },
       review: true,
@@ -164,7 +172,7 @@ export const getReviewOrderData = async (userId: string, orderId: string) => {
       name: i.menuItem.name,
       qty: i.qty,
       price: i.price,
-      image: i.menuItem.imageUrl,
+      image: i.menuItem.images,
     })),
     totalAmount: order.totalAmount,
     existingReview: order.review

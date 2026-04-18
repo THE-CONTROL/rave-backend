@@ -1,4 +1,3 @@
-// src/validators/index.ts
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15,8 +14,10 @@ export const signUpSchema = z.object({
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
-    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-    .regex(/[0-9]/, "Password must contain at least one number"),
+    .regex(
+      /[!@#$%^&*(),.?":{}|<>]/,
+      "Password must contain at least one special character",
+    ),
   role: z.enum(["user", "vendor", "rider"]),
 });
 
@@ -34,13 +35,20 @@ export const verifyEmailSchema = z.object({
 
 export const forgotPasswordSchema = z.object({
   email: z.string().email("Invalid email"),
-  purpose: z.string().min(1, "Purpose is required!"),
+  purpose: z.string().min(1, "Purpose is required"),
 });
 
 export const resetPasswordSchema = z
   .object({
-    password: z.string().min(8, "Password must be at least 8 characters"),
+    password: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .regex(
+        /[!@#$%^&*(),.?":{}|<>]/,
+        "Password must contain at least one special character",
+      ),
     confirmPassword: z.string(),
+    userId: z.string().uuid().optional(), // Used in forgot-password flow
   })
   .refine((d) => d.password === d.confirmPassword, {
     message: "Passwords do not match",
@@ -53,7 +61,7 @@ export const refreshTokenSchema = z.object({
 
 export const resendCodeSchema = z.object({
   email: z.string().email("Invalid email"),
-  purpose: z.string().min(1, "Purpose is required!"),
+  purpose: z.string().min(1, "Purpose is required"),
 });
 
 export const pushTokenSchema = z.object({
@@ -83,20 +91,6 @@ export const changePasswordSchema = z
   });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Address
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const addAddressSchema = z.object({
-  label: z.string().min(1, "Label is required"),
-  address: z.string().min(5, "Address is too short"),
-  lat: z.number().optional(),
-  lng: z.number().optional(),
-  note: z.string().optional(),
-});
-
-export const updateAddressSchema = addAddressSchema.partial();
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Location
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -108,38 +102,6 @@ export const locationSchema = z.object({
   type: z.enum(["home", "work", "other"]),
   instructions: z.string().optional(),
   isDefault: z.boolean().optional(),
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wallet / finance
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const topUpSchema = z.object({
-  amount: z
-    .number()
-    .positive("Amount must be positive")
-    .min(100, "Minimum top-up is ₦100"),
-});
-
-export const withdrawalSchema = z.object({
-  amount: z.number().positive().min(1000, "Minimum withdrawal is ₦1,000"),
-  bankId: z.string().uuid("Invalid bank ID"),
-});
-
-export const saveCardSchema = z.object({
-  brand: z.string().min(1),
-  last4: z.string().length(4),
-  expMonth: z.string().length(2),
-  expYear: z.string().length(4),
-  cardHolder: z.string().min(2),
-  email: z.string().email().optional(),
-});
-
-export const addBankSchema = z.object({
-  bankName: z.string().min(1, "Bank name is required"),
-  bankCode: z.string().min(1, "Bank code is required"),
-  accountNumber: z.string().length(10, "Account number must be 10 digits"),
-  accountName: z.string().min(2, "Account name is required"),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,20 +117,12 @@ export const updateCartItemSchema = z.object({
   qty: z.number().int().min(0).max(20),
 });
 
-export const checkoutSchema = z
-  .object({
-    addressId: z.string().uuid("Invalid address").optional(),
-    savedLocationId: z.string().uuid("Invalid location").optional(),
-    paymentMethod: z.enum(["wallet", "card", "bank_transfer"]),
-    selectedCardId: z.string().uuid().optional().nullable(),
-    usePartialWallet: z.boolean().optional(),
-    instructions: z.string().max(200).optional(),
-    contactMethod: z.enum(["in-app", "normal"]).optional(),
-    promoCode: z.string().optional(),
-  })
-  .refine((d) => !!d.addressId || !!d.savedLocationId, {
-    message: "Either addressId or savedLocationId is required.",
-  });
+export const checkoutSchema = z.object({
+  savedLocationId: z.string().uuid("Please select a valid delivery location"),
+  paymentMethod: z.enum(["card", "bank_transfer"]),
+  instructions: z.string().max(200, "Instructions too long").optional(),
+  contactMethod: z.enum(["in-app", "normal"]).default("in-app"),
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Orders
@@ -264,33 +218,64 @@ export const addItemsToCategorySchema = z.object({
 // Vendor — menu item
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const createMenuItemSchema = z.object({
-  name: z.string().min(2, "Name too short"),
-  description: z.string().optional(),
-  price: z.number().positive("Price must be positive"),
-  imageUrl: z.string().url().optional(),
-  calories: z.string().optional(),
-  prepTime: z.string().optional(),
-  serves: z.string().optional(),
-  categoryIds: z.array(z.string().uuid()).optional(),
+// ── Ingredient Schema ──
+const ingredientSchema = z.object({
+  name: z.string().min(1, "Ingredient name is required"),
+  portion: z.string().min(1, "Portion (e.g. 2 Spoons) is required"),
+  mealType: z.string().min(1, "Meal type is required"),
+  isOptional: z.boolean().default(false),
+  price: z.number().nonnegative("Price cannot be negative").default(0),
 });
 
-export const updateMenuItemSchema = createMenuItemSchema
-  .extend({
-    name: z.string().min(2, "Name too short").optional(),
-    price: z.number().positive("Price must be positive").optional(),
-    isActive: z.boolean().optional(),
-    isBestSeller: z.boolean().optional(),
-  })
-  .partial();
+// ── Image Object Schema ──
+const menuItemImageSchema = z.object({
+  url: z.string().url("Invalid image URL"),
+  main: z.boolean().default(false),
+});
 
+// ── Create Menu Item Schema ──
+export const createMenuItemSchema = z.object({
+  name: z.string().min(2, "Name is too short"),
+  description: z.string().min(10, "Please provide a more detailed description"),
+  price: z.number().positive("Price must be a positive number"),
+  // Updated to validate the object structure
+  images: z.array(menuItemImageSchema).min(1, "Upload at least one image"),
+  isCustomizable: z.boolean().default(false),
+  categoryIds: z
+    .array(z.string().uuid())
+    .min(1, "Select at least one category"),
+  ingredients: z
+    .array(ingredientSchema)
+    .min(1, "At least one item must be added to the meal"),
+});
+
+// ── Update Menu Item Schema ──
+export const updateMenuItemSchema = z.object({
+  name: z.string().min(2).optional(),
+  description: z.string().min(10).optional(),
+  price: z.number().positive().optional(),
+  images: z
+    .array(menuItemImageSchema)
+    .min(1, "Upload at least one image")
+    .optional(),
+  isActive: z.boolean().optional(),
+  isBestSeller: z.boolean().optional(),
+  isCustomizable: z.boolean().optional(),
+  categoryIds: z.array(z.string().uuid()).optional(),
+  ingredients: z.array(ingredientSchema).optional(),
+});
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor — order status
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateOrderStatusSchema = z.object({
+  id: z.string(),
   status: z.enum(["accepted", "preparing", "ready", "completed", "cancelled"]),
   cancelReason: z.string().optional(),
+});
+
+export const uploadEvidenceSchema = z.object({
+  url: z.string().url(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -298,31 +283,37 @@ export const updateOrderStatusSchema = z.object({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const createPromotionSchema = z.object({
-  title: z.string().min(3),
+  title: z.string().min(3, "Title must be at least 3 characters"),
   subtitle: z.string().optional(),
-  type: z.string().min(2),
+  type: z.string().min(2, "Invalid promotion type"),
   startDate: z.coerce.date(),
   endDate: z.coerce.date(),
   description: z.string().optional(),
-  discountValue: z.number().positive().optional(),
+  discountValue: z.number().nonnegative().optional().default(0),
   promoCode: z.string().optional(),
-  minimumOrder: z.number().positive().optional(),
+  minimumOrder: z.number().nonnegative().optional().default(0),
+  // Added fields to match implementation
+  appliesTo: z.enum(["all", "specific"]),
+  productIds: z.array(z.string().uuid()).optional().default([]),
 });
 
 export const updatePromotionSchema = z.object({
   title: z.string().min(3).optional(),
+  subtitle: z.string().optional(),
   isActive: z.boolean().optional(),
   endDate: z.coerce.date().optional(),
+  description: z.string().optional(),
+  discountValue: z.number().nonnegative().optional(),
+  promoCode: z.string().optional(),
+  minimumOrder: z.number().nonnegative().optional(),
+  // Added fields for editing product scope
+  appliesTo: z.enum(["all", "specific"]).optional(),
+  productIds: z.array(z.string().uuid()).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor — payout
 // ─────────────────────────────────────────────────────────────────────────────
-
-export const payoutSchema = z.object({
-  amount: z.number().positive().min(1000, "Minimum payout is ₦1,000"),
-  bankId: z.string().uuid(),
-});
 
 export const saveBankSchema = z.object({
   bank: z.string().min(2),
@@ -379,7 +370,7 @@ export const resolveBankSchema = z.object({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Vendor bank (save) — already exists as saveBankSchema, add vendor version
+// Vendor bank (save)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const vendorSaveBankSchema = z.object({
@@ -433,16 +424,6 @@ export const riderSaveBankSchema = z.object({
   name: z.string().min(2),
   accountNumber: z.string().length(10, "Account number must be 10 digits"),
   bankCode: z.string().optional(),
-});
-
-export const riderPayoutSchema = z.object({
-  amount: z.number().positive().min(1000, "Minimum payout is ₦1,000"),
-  bankId: z.string().uuid(),
-});
-
-export const riderResolveBankSchema = z.object({
-  bankCode: z.string().min(2),
-  accountNumber: z.string().length(10),
 });
 
 export const riderNotificationSettingsSchema = z.object({

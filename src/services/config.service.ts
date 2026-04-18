@@ -23,12 +23,6 @@ const DEFAULTS: Record<string, string> = {
   "fees.vendor_commission": "0.10",
   "fees.rider_share": "0.70", // rider gets 70% of delivery fee
 
-  // Wallet limits
-  "wallet.min_topup": "100",
-  "wallet.min_withdrawal": "1000",
-  "wallet.min_vendor_payout": "1000",
-  "wallet.min_rider_payout": "1000",
-
   // Orders
   "orders.cancel_window_secs": "300", // 5 minutes
   "orders.max_cart_vendors": "1",
@@ -37,9 +31,6 @@ const DEFAULTS: Record<string, string> = {
   "referral.referee_bonus": "1000",
   "referral.referrer_bonus": "1000",
   "referral.min_order_amount": "3000",
-
-  // Card save
-  "payments.card_save_charge": "100", // ₦100 charged then refunded
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,13 +86,6 @@ export const cfg = {
     serviceFee: () => num("fees.service_fee"),
     vatRate: () => num("fees.vat_rate"),
     vendorCommission: () => num("fees.vendor_commission"),
-    riderShare: () => num("fees.rider_share"),
-  },
-  wallet: {
-    minTopUp: () => num("wallet.min_topup"),
-    minWithdrawal: () => num("wallet.min_withdrawal"),
-    minVendorPayout: () => num("wallet.min_vendor_payout"),
-    minRiderPayout: () => num("wallet.min_rider_payout"),
   },
   orders: {
     cancelWindowSecs: () => int("orders.cancel_window_secs"),
@@ -110,9 +94,6 @@ export const cfg = {
     refereeBonus: () => num("referral.referee_bonus"),
     referrerBonus: () => num("referral.referrer_bonus"),
     minOrderAmount: () => num("referral.min_order_amount"),
-  },
-  payments: {
-    cardSaveCharge: () => num("payments.card_save_charge"),
   },
 };
 

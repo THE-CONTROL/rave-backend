@@ -249,22 +249,6 @@ export const getReviews = asyncHandler(async (req: Request, res: Response) => {
   ok(res, { reviews: result.reviews }, "Reviews retrieved.", result.meta);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Earnings / Transactions
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getEarningsSummary = asyncHandler(
-  async (req: Request, res: Response) => {
-    ok(res, await riderService.getEarningsSummary(uid(req)));
-  },
-);
-
-export const getFundsSummary = asyncHandler(
-  async (req: Request, res: Response) => {
-    ok(res, await riderService.getFundsSummary(uid(req)));
-  },
-);
-
 export const getTransactions = asyncHandler(
   async (req: Request, res: Response) => {
     const result = await riderService.getTransactions(
@@ -283,20 +267,6 @@ export const getTransactions = asyncHandler(
 export const getTransactionById = asyncHandler(
   async (req: Request, res: Response) => {
     ok(res, await riderService.getTransactionById(uid(req), req.params.id));
-  },
-);
-
-export const requestPayout = asyncHandler(
-  async (req: Request, res: Response) => {
-    ok(
-      res,
-      await riderService.requestPayout(
-        uid(req),
-        req.body.amount,
-        req.body.bankId,
-      ),
-      "Payout initiated.",
-    );
   },
 );
 
@@ -328,20 +298,6 @@ export const deleteBankAccount = asyncHandler(
   async (req: Request, res: Response) => {
     await riderService.deleteBankAccount(uid(req), req.params.id);
     ok(res, null, "Bank account removed.");
-  },
-);
-
-export const resolveBankAccount = asyncHandler(
-  async (req: Request, res: Response) => {
-    const { bankCode, accountNumber } = req.query as {
-      bankCode: string;
-      accountNumber: string;
-    };
-    const accountName = await riderService.resolveBankName(
-      bankCode,
-      accountNumber,
-    );
-    ok(res, { accountName });
   },
 );
 

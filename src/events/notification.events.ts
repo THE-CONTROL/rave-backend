@@ -164,35 +164,6 @@ export const notifyVendorOrderCancelled = (
 // Payment / wallet events
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const notifyWalletTopUp = (
-  userId: string,
-  amount: number,
-): Promise<void> =>
-  push({
-    userId,
-    type: "payment",
-    subType: "general",
-    title: "Wallet Topped Up ✅",
-    message: `₦${amount.toLocaleString()} has been added to your Rave wallet.`,
-    icon: "wallet-outline",
-    iconBg: "#34C759",
-  });
-
-export const notifyWithdrawal = (
-  userId: string,
-  amount: number,
-  bankName: string,
-): Promise<void> =>
-  push({
-    userId,
-    type: "payment",
-    subType: "general",
-    title: "Withdrawal Processed",
-    message: `₦${amount.toLocaleString()} has been sent to your ${bankName} account.`,
-    icon: "wallet-outline",
-    iconBg: "#34C759",
-  });
-
 export const notifyRefundProcessed = (
   userId: string,
   amount: number,
@@ -203,21 +174,6 @@ export const notifyRefundProcessed = (
     subType: "general",
     title: "Refund Processed ✅",
     message: `₦${amount.toLocaleString()} has been added to your wallet.`,
-    icon: "wallet-outline",
-    iconBg: "#34C759",
-  });
-
-export const notifyVendorPayout = (
-  vendorUserId: string,
-  amount: number,
-  bankName: string,
-): Promise<void> =>
-  push({
-    userId: vendorUserId,
-    type: "payment",
-    subType: "general",
-    title: "Payout Successful 💰",
-    message: `₦${amount.toLocaleString()} has been sent to your ${bankName} account.`,
     icon: "wallet-outline",
     iconBg: "#34C759",
   });
@@ -348,41 +304,6 @@ export const notifyRiderEarningsCredited = (
     message: `₦${Math.round(amount).toLocaleString()} has been added to your available balance.`,
     icon: "wallet-outline",
     iconBg: "#34C759",
-    price: amount,
-  });
-
-export const notifyRiderPayout = (
-  userId: string,
-  amount: number,
-  bankName: string,
-): Promise<void> =>
-  push({
-    userId,
-    type: "payment",
-    subType: "general",
-    title: "Payout sent 🏦",
-    message: `₦${amount.toLocaleString()} is on its way to your ${bankName} account.`,
-    icon: "arrow-up-circle-outline",
-    iconBg: "#34C759",
-    price: amount,
-  });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wallet events — extended
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const notifyWithdrawalFailed = (
-  userId: string,
-  amount: number,
-): Promise<void> =>
-  push({
-    userId,
-    type: "wallet",
-    subType: "general",
-    title: "Withdrawal failed ❌",
-    message: `Your withdrawal of ₦${amount.toLocaleString()} could not be processed. Your balance has been restored.`,
-    icon: "close-circle-outline",
-    iconBg: "#FF3B30",
     price: amount,
   });
 

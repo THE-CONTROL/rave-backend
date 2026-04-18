@@ -86,7 +86,6 @@ export const submitFeedback = async (
       role,
       type: data.type,
       message: data.message,
-      rating: data.rating,
       images: data.images ?? [],
     },
   });
@@ -114,7 +113,7 @@ export const getRecentRefs = async (userId: string, role: Role) => {
   if (role === "vendor") {
     const vendor = await prisma.vendorProfile.findUnique({ where: { userId } });
     if (!vendor) return [];
-    const txs = await prisma.vendorTransaction.findMany({
+    const txs = await prisma.transaction.findMany({
       where: { vendorId: vendor.id },
       select: { id: true, title: true, amount: true, createdAt: true },
       orderBy: { createdAt: "desc" },
@@ -170,8 +169,10 @@ export const getHelpCategories = async (role: Role) => {
 };
 
 export const getHelpArticle = async (role: Role, articleId: string) => {
-  const article = await prisma.helpArticle.findUnique({
-    where: { articleId_role: { articleId, role } },
+  return await prisma.helpArticle.findFirst({
+    where: {
+      articleId,
+      role,
+    },
   });
-  return article ?? null;
 };

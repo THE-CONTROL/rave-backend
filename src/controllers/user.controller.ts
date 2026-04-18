@@ -32,42 +32,6 @@ export const deleteAccount = asyncHandler(async (req, res) => {
   ok(res, null, "Account deactivated.");
 });
 
-// ── Addresses ────────────────────────────────────────────────────────────────
-
-export const getAddresses = asyncHandler(async (req, res) => {
-  ok(res, await userService.getAddresses(uid(req)));
-});
-
-export const getAddressById = asyncHandler(async (req, res) => {
-  ok(res, await userService.getAddressById(uid(req), req.params.id));
-});
-
-export const addAddress = asyncHandler(async (req, res) => {
-  created(
-    res,
-    await userService.addAddress(uid(req), req.body),
-    "Address added.",
-  );
-});
-
-export const updateAddress = asyncHandler(async (req, res) => {
-  ok(
-    res,
-    await userService.updateAddress(uid(req), req.params.id, req.body),
-    "Address updated.",
-  );
-});
-
-export const setDefaultAddress = asyncHandler(async (req, res) => {
-  await userService.setDefaultAddress(uid(req), req.params.id);
-  ok(res, null, "Default address updated.");
-});
-
-export const deleteAddress = asyncHandler(async (req, res) => {
-  await userService.deleteAddress(uid(req), req.params.id);
-  noContent(res);
-});
-
 // ── Saved Locations ───────────────────────────────────────────────────────────
 
 export const getSavedLocations = asyncHandler(async (req, res) => {
@@ -89,56 +53,6 @@ export const upsertLocation = asyncHandler(async (req, res) => {
 export const deleteLocation = asyncHandler(async (req, res) => {
   await userService.deleteLocation(uid(req), req.params.id);
   noContent(res);
-});
-
-// ── Wallet ────────────────────────────────────────────────────────────────────
-
-export const getWallet = asyncHandler(async (req, res) => {
-  ok(res, await userService.getWallet(uid(req)));
-});
-
-export const getSavedCards = asyncHandler(async (req, res) => {
-  ok(res, await userService.getSavedCards(uid(req)));
-});
-
-export const saveCard = asyncHandler(async (req, res) => {
-  created(res, await userService.saveCard(uid(req), req.body), "Card saved.");
-});
-
-export const deleteCard = asyncHandler(async (req, res) => {
-  await userService.deleteCard(uid(req), req.params.id);
-  noContent(res);
-});
-
-export const setDefaultCard = asyncHandler(async (req, res) => {
-  await userService.setDefaultCard(uid(req), req.params.id);
-  ok(res, null, "Default card updated.");
-});
-
-export const getSavedBanks = asyncHandler(async (req, res) => {
-  ok(res, await userService.getSavedBanks(uid(req)));
-});
-
-export const addBankAccount = asyncHandler(async (req, res) => {
-  created(
-    res,
-    await userService.addBankAccount(uid(req), req.body),
-    "Bank account added.",
-  );
-});
-
-export const topUpWallet = asyncHandler(async (req, res) => {
-  await userService.topUpWallet(uid(req), req.body.amount);
-  ok(res, null, "Wallet topped up successfully.");
-});
-
-export const requestWithdrawal = asyncHandler(async (req, res) => {
-  const result = await userService.requestWithdrawal(
-    uid(req),
-    req.body.amount,
-    req.body.bankId,
-  );
-  ok(res, result, "Withdrawal request submitted.");
 });
 
 // ── Transactions ──────────────────────────────────────────────────────────────
@@ -189,7 +103,7 @@ export const clearCart = asyncHandler(async (req, res) => {
 
 export const processCheckout = asyncHandler(async (req, res) => {
   const result = await userService.processCheckout(uid(req), req.body);
-  created(res, result, "Order placed successfully.");
+  created(res, result, "Order initiated. Please complete payment.");
 });
 
 // ── Orders ────────────────────────────────────────────────────────────────────
@@ -291,6 +205,7 @@ export const toggleFavoriteProduct = asyncHandler(async (req, res) => {
   const result = await userService.toggleFavoriteProduct(
     uid(req),
     req.params.menuItemId,
+    req.params.vendorId,
   );
   ok(
     res,
@@ -321,26 +236,6 @@ export const previewPromo = asyncHandler(async (req, res) => {
       vendorId,
     ),
   );
-});
-
-// ── Bank account CRUD ─────────────────────────────────────────────────────────
-export const getBankAccountById = asyncHandler(async (req, res) => {
-  ok(res, await userService.getBankAccountById(uid(req), req.params.id));
-});
-
-export const updateBankAccount = asyncHandler(async (req, res) => {
-  await userService.updateBankAccount(uid(req), req.params.id, req.body);
-  ok(res, null, "Bank account updated.");
-});
-
-export const setDefaultBank = asyncHandler(async (req, res) => {
-  await userService.setDefaultBank(uid(req), req.params.id);
-  ok(res, null, "Default bank updated.");
-});
-
-export const deleteBankAccount = asyncHandler(async (req, res) => {
-  await userService.deleteBankAccount(uid(req), req.params.id);
-  ok(res, null, "Bank account removed.");
 });
 
 // ── Delete refund request ─────────────────────────────────────────────────────

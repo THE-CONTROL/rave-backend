@@ -43,19 +43,15 @@ enum RefundStatus {
 }
 
 enum TransactionType {
-  top_up
-  order_payment
+  payment
+  order
   refund
-  referral_bonus
-  withdrawal
-  payout
+  referral
 }
 
 enum TransactionStatus {
-  successful
+  initiated
   completed
-  pending
-  failed
 }
 
 enum NotificationType {
@@ -95,10 +91,8 @@ enum StoreStatus {
 }
 
 enum PaymentMethod {
-  wallet
   card
   bank_transfer
-  ussd
 }
 
 enum AdMediaType {
@@ -132,6 +126,7 @@ model User {
   updatedAt         DateTime  @updatedAt
 
   // Relations - common
+  savedBanks        BankAccount[]
   refreshTokens     RefreshToken[]
   otpCodes          OtpCode[]
   notifications     Notification[]
@@ -139,15 +134,11 @@ model User {
   receivedReferral  Referral?        @relation("RefereeRelation")
 
   // Relations - user role
-  addresses         Address[]
   savedLocations    SavedLocation[]
   orders            Order[]
-  wallet            Wallet?
   transactions      Transaction[]
   refundRequests    RefundRequest[]
   reviews           Review[]
-  savedCards        SavedCard[]
-  savedBanks        BankAccount[]
   favoriteRestaurants FavoriteRestaurant[]
   favoriteProducts  FavoriteProduct[]
   cartItems         CartItem[]
@@ -196,47 +187,63 @@ model VendorProfile {
   id               String      @id @default(uuid())
   userId           String      @unique
   user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Basic Info
   storeName        String
-  storeStatus      StoreStatus @default(under_review)
-  isOpen           Boolean     @default(false)
-  autoAcceptOrders Boolean     @default(false)
+  description      String?     @db.Text
   address          String?
   lat              Float?
   lng              Float?
-  description      String?
-  bannerUrl        String?
+
+  // Branding & Visuals
   logoUrl          String?
+  bannerUrl        String?
   hoursSummary     String?
+
+  // Verification Documents (Matches Store Details2.png)
+  documentType     String?     // e.g., 'NIN', 'Passport'
+  documentUrl      String?     // URL to the uploaded personal ID
+  cacUrl           String?     // URL to the Store Verification (CAC) document
+  
+  // Status & Progress
+  setupProgress    Int         @default(0) // 0-100
+  storeStatus      StoreStatus @default(under_review)
+  isOpen           Boolean     @default(false)
+  autoAcceptOrders Boolean     @default(false)
+
+  // Metrics
   averageRating    Float       @default(0)
   totalReviews     Int         @default(0)
   positiveReviews  Int         @default(0)
-  setupProgress    Int         @default(0)
+
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
+  // Relations
   categories          Category[]
   menuItems           MenuItem[]
   promotions          Promotion[]
-  storeSchedules      StoreSchedule[]
+  schedules           StoreSchedule[]
   badges              VendorBadge[]
-  vendorTransactions  VendorTransaction[]
-  vendorBankAccounts  VendorBankAccount[]
+  transactions  Transaction[]
+  bankAccounts  BankAccount[]
   ordersReceived      Order[]              @relation("VendorOrders")
   reviewsReceived     Review[]             @relation("VendorReviews")
   favoriteRestaurants FavoriteRestaurant[]
+  favoriteProducts FavoriteProduct[]
 
   @@map("vendor_profiles")
 }
 
 model StoreSchedule {
-  id            String        @id @default(uuid())
-  vendorId      String
-  vendor        VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  day           String
-  openTime      String
-  closeTime     String
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id        String        @id @default(uuid())
+  vendorId  String
+  vendor    VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  day       String        // e.g., "Monday"
+  openTime  String        // e.g., "08:00 AM" (Matches Bottom Modal - Time.png)
+  closeTime String        // e.g., "09:00 PM"
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   @@unique([vendorId, day])
   @@map("store_schedules")
@@ -263,28 +270,57 @@ model Category {
 }
 
 model MenuItem {
-  id           String        @id @default(uuid())
-  vendorId     String
-  vendor       VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  name         String
-  description  String?
-  price        Float
-  imageUrl     String?
-  isActive     Boolean       @default(true)
-  isBestSeller Boolean       @default(false)
-  calories     String?
-  prepTime     String?
-  serves       String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id             String               @id @default(uuid())
+  vendorId       String
+  vendor         VendorProfile        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name           String
+  description    String?
+  price          Float
+  isActive       Boolean              @default(true)
+  isBestSeller   Boolean              @default(false)
+  isCustomizable Boolean              @default(false)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
-  categories   MenuItemCategory[]
-  orderItems   OrderItem[]
-  cartItems    CartItem[]
-  favorites    FavoriteProduct[]
-  customGroups ChoiceGroup[]
+  // Relations
+  categories     MenuItemCategory[]
+  ingredients    MenuItemIngredient[]
+  images         MenuItemImage[]
+  
+  orderItems     OrderItem[]
+  cartItems      CartItem[]
+  favorites      FavoriteProduct[]
 
   @@map("menu_items")
+}
+
+model MenuItemIngredient {
+  id          String   @id @default(uuid())
+  menuItemId  String
+  menuItem    MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  
+  name        String
+  portion     String   // Stores "2 Spoons", "1 Piece", etc.
+  mealType    String   @default("Side Dish") // Stores "Protein", "Side Dish", etc.
+  isOptional  Boolean  @default(false)
+  price       Float    @default(0) // Individual price for optional add-ons
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("menu_item_ingredients")
+}
+
+model MenuItemImage {
+  id          String   @id @default(uuid())
+  menuItemId  String
+  menuItem    MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  
+  url         String
+  publicId    String?
+  isMain      Boolean  @default(false)
+
+  @@map("menu_item_images")
 }
 
 model MenuItemCategory {
@@ -295,31 +331,6 @@ model MenuItemCategory {
 
   @@id([menuItemId, categoryId])
   @@map("menu_item_categories")
-}
-
-model ChoiceGroup {
-  id         String       @id @default(uuid())
-  menuItemId String
-  menuItem   MenuItem     @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  title      String
-  type       String       // "Single select" | "Quantity selector" | "Either Selection"
-  required   Boolean      @default(false)
-  createdAt  DateTime     @default(now())
-
-  options    ChoiceOption[]
-
-  @@map("choice_groups")
-}
-
-model ChoiceOption {
-  id           String      @id @default(uuid())
-  groupId      String
-  group        ChoiceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  name         String
-  extraPrice   Float       @default(0)
-  createdAt    DateTime    @default(now())
-
-  @@map("choice_options")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -343,41 +354,36 @@ model CartItem {
 }
 
 model Order {
-  id                  String      @id @default(uuid())
-  orderId             String      @unique @default(cuid())
-  userId              String
-  user                User        @relation(fields: [userId], references: [id])
-  vendorId            String
-  vendor              VendorProfile @relation("VendorOrders", fields: [vendorId], references: [id])
-  status              OrderStatus @default(new)
-  totalAmount         Float
-  deliveryFee         Float       @default(0)
-  vat                 Float       @default(0)
-  serviceFee          Float       @default(0)
-  paymentMethod       PaymentMethod
-  deliveryAddress     String
-  deliveryLat         Float?
-  deliveryLng         Float?
-  deliveryInstructions String?
-  contactMethod       String?     @default("in-app") // "in-app" | "normal"
-  estimatedArrival    String?
-  etaDuration         String?
-  cancelReason        String?
-  cancelledBy         String?     // "user" | "store" | "system"
-  evidenceUrl         String?
-  riderName           String?
-  riderPhone          String?
-  riderCode           String?
-  pickupTime          DateTime?
-  deliveryTime        DateTime?
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
+  id                   String        @id @default(uuid())
+  orderId              String        @unique @default(cuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id])
+  vendorId             String
+  vendor               VendorProfile @relation("VendorOrders", fields: [vendorId], references: [id])
+  status               OrderStatus   @default(new)
 
-  items               OrderItem[]
-  review              Review?
-  refundRequests      RefundRequest[]
-  transaction         Transaction?
-  delivery            Delivery?
+  totalAmount          Float
+  evidenceUrl      String
+  estimatedArrival     DateTime
+  etaDuration          Float
+  deliveryFee          Float         @default(0)
+  vat                  Float         @default(0)
+  serviceFee           Float         @default(0)
+  paymentMethod        PaymentMethod
+  deliveryAddress      String
+  deliveryLat          Float?
+  deliveryLng          Float?
+  deliveryInstructions String?
+  discountAmount       Float?
+  contactMethod        String?       @default("in-app")
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  items                OrderItem[]
+  review               Review?
+  delivery             Delivery?
+  transaction          Transaction?
+  refundRequests  RefundRequest[]
 
   @@map("orders")
 }
@@ -400,120 +406,78 @@ model OrderItem {
 // Wallet & Finances
 // ─────────────────────────────────────────────────────────────────────────────
 
-model Wallet {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  available Float    @default(0)
-  pending   Float    @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("wallets")
-}
-
 model Transaction {
-  id              String            @id @default(uuid())
-  userId          String
-  user            User              @relation(fields: [userId], references: [id])
-  orderId         String?           @unique
-  order           Order?            @relation(fields: [orderId], references: [id])
-  type            TransactionType
-  status          TransactionStatus @default(pending)
-  title           String
-  amount          Float
-  previousBalance Float             @default(0)
-  balanceAfter    Float             @default(0)
-  paymentMethod   String?
-  reference       String?           @unique @default(cuid())
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id            String            @id @default(uuid())
+  reference     String?           @unique @default(cuid())
+
+  // ── Participants ──────────────────────────────────────────────
+  // Unified relations for all roles
+  userId        String?
+  user          User?             @relation(fields: [userId], references: [id])
+  vendorId      String?
+  vendor        VendorProfile?    @relation(fields: [vendorId], references: [id])
+  riderId       String?
+  rider         RiderProfile?     @relation(fields: [riderId], references: [id])
+
+  // ── Core Data ─────────────────────────────────────────────────
+  type          TransactionType   // e.g., credit, debit, payout, withdrawal
+  status        TransactionStatus @default(initiated)
+  title         String            // e.g., "Jollof Rice", "Weekly Payout"
+  amount        Float             // The net amount affecting the balance
+  paymentMethod String?           @default("Card")
+
+  // ── Contextual Details ────────────────────────────────────────
+  orderId       String?           @unique
+  order         Order?            @relation(fields: [orderId], references: [id])
+  customerName  String?           // Snapshot for vendor/rider view
+  reason        String?           // Snapshot for refunds or adjustments
+  
+  // ── Financial Breakdown (Ledger) ──────────────────────────────
+  subtotal      Float?            // Gross amount before fees
+  fee           Float?            // Platform service fee/commission
+  
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
 
   @@map("transactions")
 }
 
-model SavedCard {
-  id         String   @id @default(uuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  brand      String
-  last4      String
-  expMonth   String
-  authorizationCode: String
-  expYear    String
-  cardHolder String
-  isDefault  Boolean  @default(false)
-  email      String?
-  createdAt  DateTime @default(now())
-
-  @@map("saved_cards")
-}
-
 model BankAccount {
-  id            String   @id @default(uuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bankName      String
-  bankCode      String
-  accountNumber String
-  accountName   String
-  isDefault     Boolean  @default(false)
-  isVerified    Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  id            String         @id @default(uuid())
+  
+  // ── Participants ──────────────────────────────────────────────
+  // Links to any valid profile in the system
+  userId        String?
+  user          User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendorId      String?
+  vendor        VendorProfile? @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  riderId       String?
+  rider         RiderProfile?  @relation(fields: [riderId], references: [id], onDelete: Cascade)
 
+  // ── Account Details ───────────────────────────────────────────
+  bankName      String         // e.g., "Zenith Bank"
+  bankCode      String         // Required for Paystack/Flutterwave transfers
+  accountNumber String
+  accountName   String         // The resolved legal name
+  
+  // ── Status & Flags ────────────────────────────────────────────
+  isPrimary     Boolean        @default(false)
+  isVerified    Boolean        @default(false)
+  
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // ── Constraints ───────────────────────────────────────────────
+  // Prevents duplicate accounts per user per role
+  @@unique([userId, accountNumber])
+  @@unique([vendorId, accountNumber])
+  @@unique([riderId, accountNumber])
   @@map("bank_accounts")
 }
 
-model VendorTransaction {
-  id         String        @id @default(uuid())
-  vendorId   String
-  vendor     VendorProfile @relation(fields: [vendorId], references: [id])
-  type       String        // "payment" | "withdrawal"
-  category   String        // "payment" | "payout"
-  title      String
-  amount     Float
-  status     String        @default("completed")
-  reference  String?       @unique @default(cuid())
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-
-  @@map("vendor_transactions")
-}
-
-model VendorBankAccount {
-  id           String        @id @default(uuid())
-  vendorId     String
-  vendor       VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  bank         String
-  name         String
-  accountNumber String
-  bankCode     String?
-  isPrimary    Boolean       @default(false)
-  createdAt    DateTime      @default(now())
-
-  @@map("vendor_bank_accounts")
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Addresses & Locations
+// Vendor Profile
 // ─────────────────────────────────────────────────────────────────────────────
-
-model Address {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  label     String
-  address   String
-  lat       Float?
-  lng       Float?
-  isDefault Boolean  @default(false)
-  note      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("addresses")
-}
-
 model SavedLocation {
   id           String   @id @default(uuid())
   userId       String
@@ -664,18 +628,27 @@ model Promotion {
   id             String        @id @default(uuid())
   vendorId       String
   vendor         VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  
   title          String
   subtitle       String?
-  type           String
+  type           String        // e.g., "percentage_discount", "fixed_discount"
+  
+  // New Fields for Product Scope
+  appliesTo      String        @default("all") // "all" or "specific"
+  productIds     String[]      @default([])    // Array of MenuItem IDs
+  
   startDate      DateTime
   endDate        DateTime
   isActive       Boolean       @default(true)
   description    String?
+  
   discountValue  Float?
   promoCode      String?       @unique
-  minimumOrder   Float?
+  minimumOrder   Float?        @default(0)
+  
   timesUsed      Int           @default(0)
   maxUses        Int?
+  
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
@@ -689,9 +662,10 @@ model Promotion {
 model Badge {
   id          String   @id @default(uuid())
   name        String   @unique
-  icon        String
-  description String?
+  icon        String   // Ionicons name
+  description String?  // Maps to "About This Achievement"
   xpReward    Int      @default(0)
+  perks       String[] // e.g., ["Featured badge on profile"]
   createdAt   DateTime @default(now())
 
   vendorBadges VendorBadge[]
@@ -701,26 +675,28 @@ model Badge {
 }
 
 model BadgeRequirement {
-  id        String  @id @default(uuid())
-  badgeId   String
-  badge     Badge   @relation(fields: [badgeId], references: [id], onDelete: Cascade)
-  label     String
-  total     Int?
+  id      String @id @default(uuid())
+  badgeId String
+  badge   Badge  @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+  label   String // e.g., "Complete 20 orders"
+  total   Int?   // The target number (e.g., 20)
 
   @@map("badge_requirements")
 }
 
 model VendorBadge {
-  id         String        @id @default(uuid())
-  vendorId   String
-  vendor     VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  badgeId    String
-  badge      Badge         @relation(fields: [badgeId], references: [id])
-  state      BadgeState    @default(in_progress)
-  current    Int           @default(0)
-  earnedAt   DateTime?
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+  id        String        @id @default(uuid())
+  vendorId  String
+  vendor    VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  badgeId   String
+  badge     Badge         @relation(fields: [badgeId], references: [id])
+  state     BadgeState    @default(in_progress)
+  
+  // Progress tracking
+  current   Int           @default(0) // Current progress count across requirements
+  earnedAt  DateTime?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   @@unique([vendorId, badgeId])
   @@map("vendor_badges")
@@ -777,12 +753,17 @@ model FavoriteRestaurant {
 }
 
 model FavoriteProduct {
-  id         String   @id @default(uuid())
+  id         String        @id @default(uuid())
   userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  vendor    VendorProfile @relation(fields: [vendorId], references: [id])
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // 1. Add the scalar field here
+  vendorId   String        
+  // 2. Reference it in the relation
+  vendor     VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  
   menuItemId String
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  menuItem   MenuItem      @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
 
   @@unique([userId, menuItemId])
   @@map("favorite_products")
@@ -876,8 +857,8 @@ model RiderProfile {
   updatedAt         DateTime         @updatedAt
 
   deliveries          Delivery[]
-  riderBankAccounts   RiderBankAccount[]
-  riderTransactions   RiderTransaction[]
+  bankAccounts   BankAccount[]
+  transactions   Transaction[]
   locationHistory     RiderLocationLog[]
 
   @@map("rider_profiles")
@@ -920,46 +901,6 @@ model Delivery {
   updatedAt           DateTime       @updatedAt
 
   @@map("deliveries")
-}
-
-model RiderBankAccount {
-  id            String       @id @default(uuid())
-  riderId       String
-  rider         RiderProfile @relation(fields: [riderId], references: [id], onDelete: Cascade)
-  bank          String
-  name          String
-  accountNumber String
-  bankCode      String?
-  isPrimary     Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-
-  @@map("rider_bank_accounts")
-}
-
-model RiderTransaction {
-  id         String       @id @default(uuid())
-  riderId    String
-  rider      RiderProfile @relation(fields: [riderId], references: [id])
-  type       String       // "payment" | "payout" | "withdrawal"
-  category   String       // "payment" | "payout"
-  title      String
-  amount     Float
-  status     String       @default("completed")
-  reference  String?      @unique @default(cuid())
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
-
-  @@map("rider_transactions")
-}
-
-model RiderEarningsSummary {
-  id               String   @id @default(uuid())
-  riderId          String   @unique
-  availableBalance Float    @default(0)
-  pendingBalance   Float    @default(0)
-  updatedAt        DateTime @updatedAt
-
-  @@map("rider_earnings_summary")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

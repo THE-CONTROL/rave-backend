@@ -13,6 +13,7 @@ import {
 import { PaginationQuery } from "../types";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
+import { sendOtpEmail } from "@/utils/email";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OTP helpers
@@ -37,6 +38,7 @@ export const getRiderProfile = async (userId: string) => {
       imageUrl: true,
       joinedDate: true,
       riderProfile: true,
+      profileCompletion: true,
     },
   });
   if (!user) throw AppError.notFound("User");
@@ -113,45 +115,60 @@ export const getRiderOnboardingState = async (userId: string) => {
   const rider = await _requireRider(userId);
   const user = await prisma.user.findUnique({ where: { id: userId } });
 
-  const bank = rider.riderBankAccounts[0] || null;
+  const bank = rider.bankAccounts[0] || null;
 
   // Determine which steps are done based on data presence
-  const step0Done = !!(user?.location && rider.currentAddress); // Address
+  const step0Done = !!(
+    rider.currentAddress &&
+    rider.stateOfResidence &&
+    rider.cityOfResidence
+  ); // Address
   const step1Done = !!(rider.currentLat && rider.currentLng); // Location
-  const step2Done = !!(rider.vehiclePlate && (rider as any).bikeDocUrl); // Bike
-  const step3Done = !!((rider as any).idDocUrl && (rider as any).selfieUrl); // Identity
+  const step2Done = !!(
+    rider.vehiclePlate &&
+    rider.bikeDocUrl &&
+    rider.vehicleType &&
+    rider.bikeVerificationType
+  ); // Bike
+  const step3Done = !!(
+    rider.idDocUrl &&
+    rider.selfieUrl &&
+    rider.residenceType &&
+    rider.residenceDocUrl
+  ); // Identity
   const step4Done = !!bank; // Bank
 
   let resumeStep = 0;
-  if (!step0Done) resumeStep = 0;
-  else if (!step1Done) resumeStep = 1;
-  else if (!step2Done) resumeStep = 2;
-  else if (!step3Done) resumeStep = 3;
-  else if (!step4Done) resumeStep = 4;
+  if (!step0Done) resumeStep = 1;
+  else if (!step1Done) resumeStep = 2;
+  else if (!step2Done) resumeStep = 3;
+  else if (!step3Done) resumeStep = 4;
+  else if (!step4Done) resumeStep = 5;
   else resumeStep = 5; // Review
 
   return {
     resumeStep,
     setupProgress: rider.setupProgress,
-    stateOfResidence: (rider as any).stateOfResidence || null,
-    cityOfResidence: (rider as any).cityOfResidence || null,
-    homeAddress: user?.location || null,
+    stateOfResidence: rider.stateOfResidence || null,
+    cityOfResidence: rider.cityOfResidence || null,
     currentAddress: rider.currentAddress,
+    currentLat: rider.currentLat,
+    currentLng: rider.currentLng,
     vehicleType: rider.vehicleType,
     vehiclePlate: rider.vehiclePlate,
-    bikeVerificationType: (rider as any).bikeVerificationType || null,
-    bikeDocUrl: (rider as any).bikeDocUrl || null,
-    plateImageUrl: (rider as any).plateImageUrl || null,
-    identityType: (rider as any).identityType || null,
-    idDocUrl: (rider as any).idDocUrl || null,
-    selfieUrl: (rider as any).selfieUrl || null,
-    residenceType: (rider as any).residenceType || null,
-    residenceDocUrl: (rider as any).residenceDocUrl || null,
+    bikeVerificationType: rider.bikeVerificationType || null,
+    bikeDocUrl: rider.bikeDocUrl || null,
+    plateImageUrl: rider.plateImageUrl || null,
+    identityType: rider.identityType || null,
+    idDocUrl: rider.idDocUrl || null,
+    selfieUrl: rider.selfieUrl || null,
+    residenceType: rider.residenceType || null,
+    residenceDocUrl: rider.residenceDocUrl || null,
     bank: bank
       ? {
-          bank: bank.bank,
+          bank: bank.bankName,
           accountNumber: bank.accountNumber,
-          name: bank.name,
+          name: bank.accountName,
         }
       : null,
   };
@@ -164,8 +181,8 @@ export const saveRiderOnboardingStep = async (
 ) => {
   const rider = await _requireRider(userId);
 
+  // --- Step 0: Residence Details ---
   if (step === 0) {
-    // Step 0: Address Details
     await prisma.$transaction([
       prisma.user.update({
         where: { id: userId },
@@ -176,54 +193,87 @@ export const saveRiderOnboardingStep = async (
         data: {
           stateOfResidence: data.stateOfResidence,
           cityOfResidence: data.cityOfResidence,
-        } as any,
+          homeAddress: data.homeAddress, // Update this in the profile too
+        },
       }),
     ]);
-  } else if (step === 1) {
-    // Step 1: Current Location
+  }
+  // --- Step 1: Live Location (Address + Coords) ---
+  else if (step === 1) {
     await prisma.riderProfile.update({
       where: { id: rider.id },
-      data: { currentAddress: data.currentAddress },
+      data: {
+        currentAddress: data.currentAddress,
+        currentLat: data.currentLat,
+        currentLng: data.currentLng,
+      },
     });
-  } else if (step === 4) {
-    // Step 4: Bank Account
-    const { bankName, accountName, accountNumber } = data;
-    await prisma.riderBankAccount.upsert({
+  }
+  // --- Step 2: Bike Details ---
+  else if (step === 2) {
+    await prisma.riderProfile.update({
+      where: { id: rider.id },
+      data: {
+        bikeVerificationType: data.bikeVerificationType,
+        bikeDocUrl: data.bikeDocUrl,
+        plateImageUrl: data.plateImageUrl,
+        vehiclePlate: data.vehiclePlate,
+      },
+    });
+  }
+  // --- Step 3: Identity Verification ---
+  else if (step === 3) {
+    await prisma.riderProfile.update({
+      where: { id: rider.id },
+      data: {
+        identityType: data.identityType,
+        idDocUrl: data.idDocUrl,
+        selfieUrl: data.selfieUrl,
+        residenceType: data.residenceType,
+        residenceDocUrl: data.residenceDocUrl,
+      },
+    });
+  }
+  // --- Step 4: Bank Account (Payout) ---
+  else if (step === 4) {
+    // Note: data is { bank: { bank, accountNumber, name, bankCode } }
+    const bankInfo = data.bank;
+
+    await prisma.bankAccount.upsert({
       where: {
-        // Assuming a rider only has one primary onboarding bank
-        id: rider.riderBankAccounts[0]?.id || "new-id",
+        // Find existing primary bank or use dummy ID for creation
+        id: rider.bankAccounts.find((b) => b.isPrimary)?.id || "new-id",
       },
       create: {
         riderId: rider.id,
-        bank: bankName,
-        name: accountName,
-        accountNumber: accountNumber,
+        bankName: bankInfo.bank,
+        accountName: bankInfo.name,
+        accountNumber: bankInfo.accountNumber,
         isPrimary: true,
+        bankCode: bankInfo.bankCode,
       },
       update: {
-        bank: bankName,
-        name: accountName,
-        accountNumber: accountNumber,
+        bankName: bankInfo.bank,
+        accountName: bankInfo.name,
+        accountNumber: bankInfo.accountNumber,
+        bankCode: bankInfo.bankCode,
       },
-    });
-  } else {
-    // Generic update for steps 2 and 3 (Bike and Identity)
-    await prisma.riderProfile.update({
-      where: { id: rider.id },
-      data: data,
     });
   }
 
-  // Recalculate Progress
+  // --- Recalculate Progress ---
   const state = await getRiderOnboardingState(userId);
-  const steps = [
-    !!state.homeAddress,
-    !!state.currentAddress,
-    !!state.vehiclePlate,
-    !!state.idDocUrl,
-    !!state.bank,
+  const progressSteps = [
+    !!state.currentAddress, // Step 0
+    !!state.currentLat, // Step 1
+    !!state.vehiclePlate, // Step 2
+    !!state.idDocUrl, // Step 3
+    !!state.bank, // Step 4
   ];
-  const setupProgress = Math.round((steps.filter(Boolean).length / 5) * 100);
+
+  const setupProgress = Math.round(
+    (progressSteps.filter(Boolean).length / 5) * 100,
+  );
 
   await prisma.riderProfile.update({
     where: { id: rider.id },
@@ -309,7 +359,7 @@ export const getDashboardStats = async (userId: string) => {
         deliveredAt: { gte: today },
       },
     }),
-    prisma.riderTransaction.aggregate({
+    prisma.transaction.aggregate({
       where: { riderId: rider.id, type: "payment", createdAt: { gte: today } },
       _sum: { amount: true },
     }),
@@ -392,35 +442,46 @@ export const acceptOrder = async (
   userId: string,
   orderId: string,
 ): Promise<{ success: boolean }> => {
-  const rider = await _requireRider(userId);
-
-  if (!rider.isOnline)
-    throw AppError.badRequest("You must be online to accept orders.");
-
-  // Fetch rider's user record for name/phone
-  const riderUser = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { fullName: true, phone: true },
+  // 1. Require and validate Rider
+  const rider = await prisma.riderProfile.findUnique({
+    where: { userId },
   });
 
+  if (!rider) throw AppError.notFound("Rider profile not found.");
+  if (!rider.isOnline)
+    throw AppError.badRequest("You must be online to accept orders.");
+  // if (rider.status !== "verified")
+  //   throw AppError.forbidden(
+  //     "Your account is not yet verified for deliveries.",
+  //   );
+
+  // 2. Fetch Order with User and Vendor User (for emails)
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
       delivery: true,
-      user: { select: { id: true, fullName: true } },
-      vendor: { select: { storeName: true, lat: true, lng: true } },
+      user: { select: { id: true, fullName: true, email: true } },
+      vendor: {
+        include: {
+          user: { select: { fullName: true, email: true } }, // Vendor's User record
+        },
+      },
     },
   });
 
   if (!order) throw AppError.notFound("Order");
   if (order.delivery)
-    throw AppError.conflict(
-      "This order has already been accepted by another rider.",
-    );
+    throw AppError.conflict("This order has already been accepted.");
   if (order.status !== "ready")
-    throw AppError.badRequest("This order is not available for pickup.");
+    throw AppError.badRequest("Order is not ready for pickup.");
 
-  // Calculate real distance/ETA if rider has coordinates
+  // 3. Fetch Rider User details for Order update
+  const riderUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { fullName: true, phone: true },
+  });
+
+  // 4. Distance and ETA Calculation
   let distanceKm = 2.5;
   let etaMinutes = 15;
 
@@ -442,15 +503,38 @@ export const acceptOrder = async (
     etaMinutes = estimateEtaMinutes(distanceKm);
   }
 
-  const vendorOtp = genOtp();
-  const customerOtp = genOtp();
+  // 5. Generate Security OTPs
+  const vendorOtp = genOtp(); // To be verified at Pickup
+  const customerOtp = genOtp(); // To be verified at Delivery
 
+  // 6. Send OTPs via Email
+  // To Customer
+  if (order.user.email) {
+    await sendOtpEmail(
+      order.user.email,
+      order.user.fullName,
+      customerOtp,
+      "order-delivery-code",
+    );
+  }
+
+  // To Vendor (Using vendor.user.email)
+  if (order.vendor.user.email) {
+    await sendOtpEmail(
+      order.vendor.user.email,
+      order.vendor.user.fullName,
+      vendorOtp,
+      "vendor-pickup-code",
+    );
+  }
+
+  // 7. Atomic Transaction: Create Delivery & Update Order
   await prisma.$transaction([
     prisma.delivery.create({
       data: {
-        orderId,
+        orderId: order.id,
         riderId: rider.id,
-        status: "pending",
+        status: "ongoing", // Transition to ongoing immediately upon acceptance
         vendorOtp,
         customerOtp,
         estimatedPickupTime: new Date(
@@ -465,24 +549,30 @@ export const acceptOrder = async (
       where: { id: orderId },
       data: {
         status: "ongoing",
-        riderCode: customerOtp.replace(/ /g, ""),
-        riderName: riderUser?.fullName ?? null,
-        riderPhone: riderUser?.phone ?? null,
+        // Using fields matching common Order patterns (Add these to Order model if missing)
+        // riderName: riderUser?.fullName,
+        // riderPhone: riderUser?.phone,
       },
     }),
   ]);
 
-  await notif.notifyRiderAssigned(
-    order.user.id,
-    orderId,
-    riderUser?.fullName ?? "Your rider",
-  );
-
-  await notif.notifyRiderDeliveryAccepted(
-    userId,
-    orderId,
-    order.vendor.storeName,
-  );
+  // 8. Notifications
+  try {
+    await Promise.all([
+      notif.notifyRiderAssigned(
+        order.user.id,
+        orderId,
+        riderUser?.fullName ?? "Your rider",
+      ),
+      notif.notifyRiderDeliveryAccepted(
+        userId,
+        orderId,
+        order.vendor.storeName,
+      ),
+    ]);
+  } catch (err) {
+    console.error("Notification failed but transaction succeeded:", err);
+  }
 
   return { success: true };
 };
@@ -604,7 +694,7 @@ export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
               name: true,
               qty: true,
               price: true,
-              menuItem: { select: { imageUrl: true } },
+              menuItem: { select: { images: true } },
             },
           },
         },
@@ -649,7 +739,7 @@ export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
     packageSummary: order.items.map((i) => ({
       name: i.name,
       quantity: i.qty,
-      image: i.menuItem?.imageUrl ?? null,
+      images: i.menuItem?.images ?? null,
     })),
     earnings: delivery.earnings,
   };
@@ -701,17 +791,6 @@ export const updateDeliveryStatus = async (
     });
 
     if (newStatus === "delivered" && earnings) {
-      await tx.riderTransaction.create({
-        data: {
-          riderId: rider.id,
-          type: "payment",
-          category: "payment",
-          title: `Delivery ${delivery.order.orderId}`,
-          amount: earnings,
-          status: "completed",
-        },
-      });
-
       await tx.riderProfile.update({
         where: { id: rider.id },
         data: {
@@ -719,23 +798,11 @@ export const updateDeliveryStatus = async (
           totalEarnings: { increment: earnings },
         },
       });
-
-      // Update or create earnings summary
-      await tx.riderEarningsSummary.upsert({
-        where: { riderId: rider.id },
-        create: {
-          riderId: rider.id,
-          availableBalance: earnings,
-          pendingBalance: 0,
-        },
-        update: { availableBalance: { increment: earnings } },
-      });
     }
   });
 
   if (newStatus === "delivered") {
     await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
-    if (earnings) await notif.notifyRiderEarningsCredited(userId, earnings);
   }
 
   if (newStatus === "cancelled") {
@@ -833,15 +900,45 @@ export const uploadDeliveryProof = async (
   fileUrl: string,
 ): Promise<{ success: boolean }> => {
   const rider = await _requireRider(userId);
+
+  // 1. Fetch delivery to ensure ownership and get the associated orderId
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
+    select: { id: true, orderId: true, status: true },
   });
+
   if (!delivery) throw AppError.notFound("Delivery");
 
-  await prisma.delivery.update({
-    where: { id: deliveryId },
-    data: { deliveryProofUrl: fileUrl },
-  });
+  // Prevent double-processing if already delivered
+  if (delivery.status === "delivered") {
+    return { success: true };
+  }
+
+  // 2. Atomic Transaction: Update Delivery and Order status
+  await prisma.$transaction([
+    // Update Delivery record
+    prisma.delivery.update({
+      where: { id: deliveryId },
+      data: {
+        deliveryProofUrl: fileUrl,
+        status: "delivered",
+        deliveredAt: new Date(),
+      },
+    }),
+    // Update main Order record
+    prisma.order.update({
+      where: { id: delivery.orderId },
+      data: {
+        status: "completed",
+      },
+    }),
+    // Optional: Increment rider's total delivery count
+    prisma.riderProfile.update({
+      where: { id: rider.id },
+      data: { totalDeliveries: { increment: 1 } },
+    }),
+  ]);
+
   return { success: true };
 };
 
@@ -880,7 +977,7 @@ export const getAnalytics = async (userId: string) => {
 
   const [totalTx, totalDeliveries, completedDeliveries, cancelledDeliveries] =
     await Promise.all([
-      prisma.riderTransaction.aggregate({
+      prisma.transaction.aggregate({
         where: { riderId: rider.id, type: "payment" },
         _sum: { amount: true },
         _avg: { amount: true },
@@ -1002,46 +1099,6 @@ export const getRiderReviews = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // Earnings / Transactions
 // ─────────────────────────────────────────────────────────────────────────────
-
-export const getEarningsSummary = async (userId: string) => {
-  const rider = await _requireRider(userId);
-
-  const [summary, totalEarnedAgg, totalWithdrawnAgg, recent] =
-    await Promise.all([
-      prisma.riderEarningsSummary.findUnique({ where: { riderId: rider.id } }),
-      prisma.riderTransaction.aggregate({
-        where: { riderId: rider.id, type: "payment", status: "completed" },
-        _sum: { amount: true },
-      }),
-      prisma.riderTransaction.aggregate({
-        where: { riderId: rider.id, type: "withdrawal", status: "completed" },
-        _sum: { amount: true },
-      }),
-      prisma.riderTransaction.findMany({
-        where: { riderId: rider.id },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-      }),
-    ]);
-
-  return {
-    totalEarned: totalEarnedAgg._sum.amount ?? 0,
-    totalWithdrawn: totalWithdrawnAgg._sum.amount ?? 0,
-    availableBalance: summary?.availableBalance ?? 0,
-    pendingBalance: summary?.pendingBalance ?? 0,
-    recentTransactions: recent.map(_formatTx),
-  };
-};
-
-export const getFundsSummary = async (userId: string) => {
-  const [summary, riderShare] = await Promise.all([
-    getEarningsSummary(userId),
-    cfg.fees.riderShare(),
-  ]);
-  // riderShare is the fraction the rider keeps (e.g. 0.70 = 70%)
-  return { ...summary, vatRate: riderShare };
-};
-
 export const getTransactions = async (
   userId: string,
   query: PaginationQuery & { type?: string },
@@ -1061,13 +1118,13 @@ export const getTransactions = async (
   };
 
   const [txs, total] = await Promise.all([
-    prisma.riderTransaction.findMany({
+    prisma.transaction.findMany({
       where,
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
     }),
-    prisma.riderTransaction.count({ where }),
+    prisma.transaction.count({ where }),
   ]);
 
   return {
@@ -1078,50 +1135,11 @@ export const getTransactions = async (
 
 export const getTransactionById = async (userId: string, txId: string) => {
   const rider = await _requireRider(userId);
-  const tx = await prisma.riderTransaction.findFirst({
+  const tx = await prisma.transaction.findFirst({
     where: { id: txId, riderId: rider.id },
   });
   if (!tx) throw AppError.notFound("Transaction");
   return _formatTx(tx);
-};
-
-export const requestPayout = async (
-  userId: string,
-  amount: number,
-  bankId: string,
-): Promise<{ success: boolean }> => {
-  const rider = await _requireRider(userId);
-  const summary = await prisma.riderEarningsSummary.findUnique({
-    where: { riderId: rider.id },
-  });
-
-  if (!summary || summary.availableBalance < amount) {
-    throw AppError.badRequest("Insufficient available balance.");
-  }
-
-  const bank = await prisma.riderBankAccount.findFirst({
-    where: { id: bankId, riderId: rider.id },
-  });
-  if (!bank) throw AppError.notFound("Bank account");
-
-  await prisma.$transaction([
-    prisma.riderTransaction.create({
-      data: {
-        riderId: rider.id,
-        type: "withdrawal",
-        category: "payout",
-        title: `Bank Transfer — ${bank.bank}`,
-        amount,
-        status: "completed",
-      },
-    }),
-    prisma.riderEarningsSummary.update({
-      where: { riderId: rider.id },
-      data: { availableBalance: { decrement: amount } },
-    }),
-  ]);
-
-  return { success: true };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1130,7 +1148,7 @@ export const requestPayout = async (
 
 export const getBankAccounts = async (userId: string) => {
   const rider = await _requireRider(userId);
-  const accounts = await prisma.riderBankAccount.findMany({
+  const accounts = await prisma.bankAccount.findMany({
     where: { riderId: rider.id },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
   });
@@ -1143,17 +1161,17 @@ export const getBankAccounts = async (userId: string) => {
 export const saveBankAccount = async (
   userId: string,
   data: {
-    bank: string;
-    name: string;
+    bankName: string;
+    accountName: string;
     accountNumber: string;
-    bankCode?: string;
+    bankCode: string;
   },
 ): Promise<void> => {
   const rider = await _requireRider(userId);
-  const count = await prisma.riderBankAccount.count({
+  const count = await prisma.bankAccount.count({
     where: { riderId: rider.id },
   });
-  await prisma.riderBankAccount.create({
+  await prisma.bankAccount.create({
     data: { riderId: rider.id, isPrimary: count === 0, ...data },
   });
 };
@@ -1164,11 +1182,11 @@ export const setPrimaryBank = async (
 ): Promise<void> => {
   const rider = await _requireRider(userId);
   await prisma.$transaction([
-    prisma.riderBankAccount.updateMany({
+    prisma.bankAccount.updateMany({
       where: { riderId: rider.id },
       data: { isPrimary: false },
     }),
-    prisma.riderBankAccount.update({
+    prisma.bankAccount.update({
       where: { id: bankId },
       data: { isPrimary: true },
     }),
@@ -1180,36 +1198,11 @@ export const deleteBankAccount = async (
   bankId: string,
 ): Promise<void> => {
   const rider = await _requireRider(userId);
-  const account = await prisma.riderBankAccount.findFirst({
+  const account = await prisma.bankAccount.findFirst({
     where: { id: bankId, riderId: rider.id },
   });
   if (!account) throw AppError.notFound("Bank account");
-  await prisma.riderBankAccount.delete({ where: { id: bankId } });
-};
-
-export const resolveBankName = async (
-  bankCode: string,
-  accountNumber: string,
-): Promise<string> => {
-  const paystackKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!paystackKey) return "Account Holder Name"; // dev fallback
-
-  try {
-    const res = await fetch(
-      `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
-      { headers: { Authorization: `Bearer ${paystackKey}` } },
-    );
-    const json = (await res.json()) as {
-      status: boolean;
-      data?: { account_name: string };
-    };
-    if (json.status && json.data?.account_name) return json.data.account_name;
-    throw new Error("Could not resolve account name.");
-  } catch (err: any) {
-    throw AppError.badRequest(
-      err?.message ?? "Could not resolve account name.",
-    );
-  }
+  await prisma.bankAccount.delete({ where: { id: bankId } });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1282,9 +1275,7 @@ export const updateNotificationSettings = (
 const _requireRider = async (userId: string) => {
   const rider = await prisma.riderProfile.findUnique({
     where: { userId },
-    include: {
-      riderBankAccounts: true, // <--- Add this
-    },
+    include: { bankAccounts: true }, // This "hydrates" the relation
   });
   if (!rider) throw AppError.notFound("Rider profile");
   return rider;

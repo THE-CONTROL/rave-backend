@@ -89,3 +89,19 @@ export const getBreakfastPicks = asyncHandler(async (req, res) => {
 export const getRatingDistribution = asyncHandler(async (req, res) => {
   ok(res, await catalogService.getRatingDistribution(req.params.id));
 });
+
+export const getAllVendors = asyncHandler(async (req, res) => {
+  const result = await catalogService.getAllVendors(
+    req.query as any,
+    optionalUid(req),
+  );
+  ok(res, result.data, "Vendors retrieved.", result.meta);
+});
+
+export const getAllMenuItems = asyncHandler(async (req, res) => {
+  const result = await catalogService.getAllMenuItems(
+    req.query as any,
+    optionalUid(req),
+  );
+  ok(res, result.data, "Menu items retrieved.", result.meta);
+});

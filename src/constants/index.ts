@@ -9,9 +9,6 @@ export const FEES = {
   SERVICE_FEE: 150, // ₦150 per order service fee
   VAT_RATE: 0.075, // 7.5% VAT
   VENDOR_COMMISSION: 0.1, // 10% platform commission on vendor earnings
-  MIN_WITHDRAWAL: 1000, // ₦1,000 minimum user wallet withdrawal
-  MIN_VENDOR_PAYOUT: 1000, // ₦1,000 minimum vendor payout
-  MIN_TOPUP: 100, // ₦100 minimum wallet top-up
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────

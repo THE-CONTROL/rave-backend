@@ -17,6 +17,7 @@ export const signUp = asyncHandler(async (req: Request, res: Response) => {
 
 export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.verifyEmail(req.body);
+  // result now contains { purpose, tokens, role }
   ok(res, result, "Email verified successfully.");
 });
 
@@ -46,7 +47,19 @@ export const forgotPassword = asyncHandler(
 
 export const resetPassword = asyncHandler(
   async (req: Request, res: Response) => {
-    const userId = (req as AuthenticatedRequest).user?.id ?? req.body.userId;
+    // Fix: Prioritize user ID from the request body for the forgot-password flow
+    // while allowing authenticated users to change password via their session.
+    const userId = req.body.userId ?? (req as AuthenticatedRequest).user?.id;
+
+    if (!userId) {
+      // Don't 'return' the result of res.status
+      res.status(400).json({
+        success: false,
+        message: "User context is required to reset password.",
+      });
+      return; // Return nothing (void)
+    }
+
     await authService.resetPassword(userId, req.body);
     ok(res, null, "Password updated successfully.");
   },

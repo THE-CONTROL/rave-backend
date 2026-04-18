@@ -23,47 +23,11 @@ router.patch(
 router.delete("/account", ctrl.deleteAccount);
 router.patch("/push-token", ctrl.updatePushToken);
 
-// ── Addresses ─────────────────────────────────────────────────────────────────
-router.get("/addresses", ctrl.getAddresses);
-router.get("/addresses/:id", ctrl.getAddressById);
-router.post("/addresses", validate(v.addAddressSchema), ctrl.addAddress);
-router.patch(
-  "/addresses/:id",
-  validate(v.updateAddressSchema),
-  ctrl.updateAddress,
-);
-router.patch("/addresses/:id/default", ctrl.setDefaultAddress);
-router.delete("/addresses/:id", ctrl.deleteAddress);
-
 // ── Saved Locations ───────────────────────────────────────────────────────────
 router.get("/locations", ctrl.getSavedLocations);
 router.post("/locations", validate(v.locationSchema), ctrl.upsertLocation);
 router.put("/locations/:id", validate(v.locationSchema), ctrl.upsertLocation);
 router.delete("/locations/:id", ctrl.deleteLocation);
-
-// ── Wallet ────────────────────────────────────────────────────────────────────
-router.get("/wallet", ctrl.getWallet);
-router.get("/wallet/topup-methods", walletCtrl.getTopUpMethods);
-router.get("/wallet/transfer-details", walletCtrl.getVirtualAccount);
-router.post("/wallet/topup", validate(v.topUpSchema), ctrl.topUpWallet);
-router.post(
-  "/wallet/withdraw",
-  validate(v.withdrawalSchema),
-  ctrl.requestWithdrawal,
-);
-
-// ── Cards ─────────────────────────────────────────────────────────────────────
-router.get("/wallet/cards", ctrl.getSavedCards);
-router.delete("/wallet/cards/:id", ctrl.deleteCard);
-router.patch("/wallet/cards/:id/default", ctrl.setDefaultCard);
-
-// ── Banks ─────────────────────────────────────────────────────────────────────
-router.get("/wallet/banks", ctrl.getSavedBanks);
-router.post("/wallet/banks", validate(v.addBankSchema), ctrl.addBankAccount);
-router.get("/wallet/banks/:id", ctrl.getBankAccountById);
-router.patch("/wallet/banks/:id", ctrl.updateBankAccount);
-router.patch("/wallet/banks/:id/default", ctrl.setDefaultBank);
-router.delete("/wallet/banks/:id", ctrl.deleteBankAccount);
 
 // ── Transactions ──────────────────────────────────────────────────────────────
 router.get("/transactions", ctrl.getTransactions);

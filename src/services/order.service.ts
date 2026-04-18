@@ -73,23 +73,6 @@ export const cancelOrderByUser = async (
       where: { id: orderId },
       data: { status: "cancelled", cancelReason: reason, cancelledBy: "user" },
     });
-
-    // Refund to wallet
-    await tx.wallet.update({
-      where: { userId },
-      data: { available: { increment: order.totalAmount } },
-    });
-
-    await tx.transaction.create({
-      data: {
-        userId,
-        orderId,
-        type: "refund",
-        status: "successful",
-        title: "Order Cancellation Refund",
-        amount: order.totalAmount,
-      },
-    });
   });
 
   await notif.notifyOrderCancelled(userId, orderId, "user");
@@ -126,58 +109,19 @@ export const advanceOrderStatus = async (
       where: { id: orderId },
       data: {
         status: newStatus,
-        ...(newStatus === "cancelled"
-          ? { cancelReason, cancelledBy: "store" }
-          : {}),
-        ...(newStatus === "ready" ? { pickupTime: new Date() } : {}),
-        ...(newStatus === "completed" ? { deliveryTime: new Date() } : {}),
+        // ...(newStatus === "cancelled"
+        //   ? { cancelReason, cancelledBy: "store" }
+        //   : {}),
+        // ...(newStatus === "ready" ? { pickupTime: new Date() } : {}),
+        // ...(newStatus === "completed" ? { deliveryTime: new Date() } : {}),
       },
     });
-
-    // Record vendor earnings when completed
-    if (newStatus === "completed") {
-      const commission = await cfg.fees.vendorCommission();
-      const net = order.totalAmount * (1 - commission);
-      await tx.vendorTransaction.create({
-        data: {
-          vendorId: vendor.id,
-          type: "payment",
-          category: "payment",
-          title: `Order ${order.orderId}`,
-          amount: net,
-          status: "completed",
-        },
-      });
-    }
-
-    // Refund user if store cancels
-    // if (newStatus === "cancelled") {
-    //   await tx.wallet.upsert({
-    //     where: { userId: order.userId },
-    //     create: { userId: order.userId, available: order.totalAmount },
-    //     update: { available: { increment: order.totalAmount } },
-    //   });
-
-    //   await tx.transaction.create({
-    //     data: {
-    //       userId: order.userId,
-    //       orderId,
-    //       type: "refund",
-    //       status: "successful",
-    //       title: "Order Cancelled by Store — Refund",
-    //       amount: order.totalAmount,
-    //     },
-    //   });
-    // }
   });
 
   // ── Fire notifications based on new status ────────────────────────────────
   switch (newStatus) {
     case "accepted":
       await notif.notifyOrderAccepted(order.userId, orderId, vendor.storeName);
-      break;
-    case "preparing":
-      await notif.notifyOrderPreparing(order.userId, orderId, vendor.storeName);
       break;
     case "ready": {
       await notif.notifyOrderReady(order.userId, orderId);
@@ -272,9 +216,8 @@ export const getOrderTracking = async (userId: string, orderId: string) => {
     },
     rider: rider
       ? {
-          name: order.riderName ?? rider.user?.fullName ?? "",
-          phone: order.riderPhone ?? rider.user?.phone ?? "",
-          code: order.riderCode ?? null,
+          name: rider.user?.fullName ?? "",
+          phone: rider.user?.phone ?? "",
           image: rider.user?.imageUrl ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
@@ -379,4 +322,41 @@ export const calculateCartSummary = async (userId: string) => {
     total,
     itemCount: cartItems.reduce((s, ci) => s + ci.qty, 0),
   };
+};
+
+export const uploadOrderEvidence = async (
+  vendorUserId: string,
+  orderId: string,
+  url: string, // Changed from OrderStatus to string
+): Promise<{ success: boolean }> => {
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { userId: vendorUserId },
+  });
+  if (!vendor) throw AppError.notFound("Vendor profile");
+
+  const order = await prisma.order.findFirst({
+    where: { id: orderId, vendorId: vendor.id },
+  });
+  if (!order) throw AppError.notFound("Order");
+
+  const newStatus: OrderStatus = "ready";
+
+  // Ensure the transition is logical (e.g., Preparing -> Ready)
+  assertTransitionAllowed(order.status, newStatus);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: newStatus,
+        evidenceUrl: url, // Save the Cloudinary URL
+        ...(newStatus === "ready" ? { readyAt: new Date() } : {}),
+      },
+    });
+
+    // Notify customer that the order is now ready for pickup
+    await notif.notifyOrderReady(order.userId, orderId);
+  }); // Added missing closing brace and parenthesis for transaction
+
+  return { success: true };
 };

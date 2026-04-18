@@ -46,3 +46,14 @@ export const advanceStatus = asyncHandler(
     ok(res, null, "Order status updated.");
   },
 );
+
+export const uploadOrderEvidence = asyncHandler(
+  async (req: Request, res: Response) => {
+    await orderService.uploadOrderEvidence(
+      uid(req),
+      req.params.id,
+      req.body.url,
+    );
+    ok(res, null, "Video uploaded.");
+  },
+);

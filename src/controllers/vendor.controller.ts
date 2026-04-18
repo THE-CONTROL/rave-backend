@@ -126,19 +126,19 @@ export const getMenuItemById = asyncHandler(async (req, res) => {
 });
 
 export const createMenuItem = asyncHandler(async (req, res) => {
-  created(
-    res,
-    await vendorService.createMenuItem(uid(req), req.body),
-    "Menu item created.",
-  );
+  const result = await vendorService.createMenuItem(uid(req), req.body);
+  created(res, result, "Menu item created with multiple images.");
 });
 
 export const updateMenuItem = asyncHandler(async (req, res) => {
-  ok(
-    res,
-    await vendorService.updateMenuItem(uid(req), req.params.id, req.body),
-    "Menu item updated.",
+  // Ensure we pass the item ID from the URL params to the service
+  const result = await vendorService.updateMenuItem(
+    uid(req),
+    req.params.id,
+    req.body,
   );
+
+  ok(res, result, "Menu item updated successfully.");
 });
 
 export const deleteMenuItems = asyncHandler(async (req, res) => {
@@ -167,11 +167,7 @@ export const getAnalytics = asyncHandler(async (req, res) => {
   ok(res, await vendorService.getAnalytics(uid(req)));
 });
 
-// ── Earnings / Transactions ───────────────────────────────────────────────────
-
-export const getEarningsSummary = asyncHandler(async (req, res) => {
-  ok(res, await vendorService.getEarningsSummary(uid(req)));
-});
+// ── Transactions ───────────────────────────────────────────────────
 
 export const getTransactions = asyncHandler(async (req, res) => {
   const result = await vendorService.getVendorTransactions(
@@ -191,15 +187,6 @@ export const getTransactionById = asyncHandler(async (req, res) => {
     res,
     await vendorService.getVendorTransactionById(uid(req), req.params.id),
   );
-});
-
-export const requestPayout = asyncHandler(async (req, res) => {
-  const result = await vendorService.requestPayout(
-    uid(req),
-    req.body.amount,
-    req.body.bankId,
-  );
-  ok(res, result, "Payout requested.");
 });
 
 // ── Bank Accounts ─────────────────────────────────────────────────────────────

@@ -21,4 +21,7 @@ router.get("/categories", ctrl.getFoodCategories);
 router.get("/categories/:name/items", ctrl.getItemsByCategory);
 router.get("/breakfast-picks", optionalAuth, ctrl.getBreakfastPicks);
 
+router.get("/vendors", optionalAuth, ctrl.getAllVendors);
+router.get("/menu-items", optionalAuth, ctrl.getAllMenuItems);
+
 export default router;

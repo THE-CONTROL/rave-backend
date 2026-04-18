@@ -3,11 +3,11 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { buildMeta, parsePagination } from "../utils";
-import { CheckoutDto, PaginationQuery } from "../types";
+import { CheckoutInput, PaginationQuery } from "../types";
 import { UserNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
-import { encrypt } from "../utils/crypto";
+import * as paymentService from "../services/payment.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile
@@ -82,68 +82,6 @@ export const deleteAccount = async (userId: string): Promise<void> => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Addresses
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getAddresses = (userId: string) =>
-  prisma.address.findMany({
-    where: { userId },
-    orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-  });
-
-export const getAddressById = async (userId: string, addressId: string) => {
-  const address = await prisma.address.findFirst({
-    where: { id: addressId, userId },
-  });
-  if (!address) throw AppError.notFound("Address");
-  return address;
-};
-
-export const addAddress = (
-  userId: string,
-  data: { label: string; address: string; note?: string },
-) => prisma.address.create({ data: { userId, ...data } });
-
-export const updateAddress = async (
-  userId: string,
-  addressId: string,
-  data: { label?: string; address?: string; note?: string },
-) => {
-  const existing = await prisma.address.findFirst({
-    where: { id: addressId, userId },
-  });
-  if (!existing) throw AppError.notFound("Address");
-  return prisma.address.update({ where: { id: addressId }, data });
-};
-
-export const setDefaultAddress = async (
-  userId: string,
-  addressId: string,
-): Promise<void> => {
-  await prisma.$transaction([
-    prisma.address.updateMany({
-      where: { userId },
-      data: { isDefault: false },
-    }),
-    prisma.address.update({
-      where: { id: addressId },
-      data: { isDefault: true },
-    }),
-  ]);
-};
-
-export const deleteAddress = async (
-  userId: string,
-  addressId: string,
-): Promise<void> => {
-  const existing = await prisma.address.findFirst({
-    where: { id: addressId, userId },
-  });
-  if (!existing) throw AppError.notFound("Address");
-  await prisma.address.delete({ where: { id: addressId } });
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Saved Locations
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -169,6 +107,7 @@ export const upsertLocation = (
   if (locationId) {
     return prisma.savedLocation.update({ where: { id: locationId }, data });
   }
+
   return prisma.savedLocation.create({ data: { userId, ...data } });
 };
 
@@ -181,147 +120,6 @@ export const deleteLocation = async (
   });
   if (!loc) throw AppError.notFound("Location");
   await prisma.savedLocation.delete({ where: { id: locationId } });
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wallet
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getWallet = async (userId: string) => {
-  const [wallet, vatRate, commissionRate] = await Promise.all([
-    prisma.wallet.findUnique({ where: { userId } }),
-    cfg.fees.vatRate(),
-    cfg.fees.vendorCommission(),
-  ]);
-  if (!wallet) throw AppError.notFound("Wallet");
-  return {
-    id: wallet.id,
-    available: wallet.available,
-    pending: wallet.pending,
-    vatRate,
-    commissionRate,
-  };
-};
-
-export const getSavedCards = (userId: string) =>
-  prisma.savedCard.findMany({
-    where: { userId },
-    orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-  });
-
-export const saveCard = (
-  userId: string,
-  data: {
-    brand: string;
-    last4: string;
-    expMonth: string;
-    expYear: string;
-    cardHolder: string;
-    email?: string;
-  },
-) => prisma.savedCard.create({ data: { userId, ...data } });
-
-export const deleteCard = async (
-  userId: string,
-  cardId: string,
-): Promise<void> => {
-  const card = await prisma.savedCard.findFirst({
-    where: { id: cardId, userId },
-  });
-  if (!card) throw AppError.notFound("Card");
-  await prisma.savedCard.delete({ where: { id: cardId } });
-};
-
-export const setDefaultCard = async (
-  userId: string,
-  cardId: string,
-): Promise<void> => {
-  await prisma.$transaction([
-    prisma.savedCard.updateMany({
-      where: { userId },
-      data: { isDefault: false },
-    }),
-    prisma.savedCard.update({
-      where: { id: cardId },
-      data: { isDefault: true },
-    }),
-  ]);
-};
-
-export const getSavedBanks = (userId: string) =>
-  prisma.bankAccount.findMany({ where: { userId } });
-
-export const addBankAccount = (
-  userId: string,
-  data: {
-    bankName: string;
-    bankCode: string;
-    accountNumber: string;
-    accountName: string;
-  },
-) => prisma.bankAccount.create({ data: { userId, ...data } });
-
-export const topUpWallet = async (
-  userId: string,
-  amount: number,
-): Promise<void> => {
-  const wallet = await prisma.wallet.findUnique({ where: { userId } });
-  if (!wallet) throw AppError.notFound("Wallet");
-
-  await prisma.$transaction([
-    prisma.wallet.update({
-      where: { userId },
-      data: { available: { increment: amount } },
-    }),
-    prisma.transaction.create({
-      data: {
-        userId,
-        type: "top_up",
-        status: "successful",
-        title: "Wallet Top Up",
-        amount,
-        previousBalance: wallet.available,
-        balanceAfter: wallet.available + amount,
-      },
-    }),
-  ]);
-};
-
-export const requestWithdrawal = async (
-  userId: string,
-  amount: number,
-  bankId: string,
-): Promise<{ ref: string }> => {
-  const wallet = await prisma.wallet.findUnique({ where: { userId } });
-  if (!wallet) throw AppError.notFound("Wallet");
-  if (wallet.available < amount) {
-    throw AppError.badRequest("Insufficient wallet balance.");
-  }
-
-  const bank = await prisma.bankAccount.findFirst({
-    where: { id: bankId, userId },
-  });
-  if (!bank) throw AppError.notFound("Bank account");
-
-  const tx = await prisma.$transaction(async (tx) => {
-    await tx.wallet.update({
-      where: { userId },
-      data: { available: { decrement: amount } },
-    });
-    return tx.transaction.create({
-      data: {
-        userId,
-        type: "withdrawal",
-        status: "successful",
-        title: `Withdrawal to ${bank.bankName}`,
-        amount: -amount,
-        previousBalance: wallet.available,
-        balanceAfter: wallet.available - amount,
-      },
-    });
-  });
-
-  return { ref: tx.reference ?? "" };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,7 +208,11 @@ export const getOrderById = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
     where: { id: orderId, userId },
     include: {
-      items: { include: { menuItem: true } },
+      menuItem: {
+        include: {
+          images: true,
+        },
+      },
       user: { select: { fullName: true, phone: true, imageUrl: true } },
       vendor: {
         select: {
@@ -445,9 +247,8 @@ export const getOrderById = async (userId: string, orderId: string) => {
     contactMethod: order.contactMethod ?? "in-app",
     rider: rider
       ? {
-          name: order.riderName ?? rider.user?.fullName ?? "",
-          phone: order.riderPhone ?? rider.user?.phone ?? "",
-          code: order.riderCode ?? null,
+          name: rider.user?.fullName ?? "",
+          phone: rider.user?.phone ?? "",
           image: rider.user.imageUrl,
           lat: rider.currentLat,
           lng: rider.currentLng,
@@ -521,212 +322,216 @@ export const applyPromoCode = async (
 
 export const processCheckout = async (
   userId: string,
-  dto: CheckoutDto,
-): Promise<{ orderId: string; discountAmount: number }> => {
-  const cartItems = await prisma.cartItem.findMany({
-    where: { userId },
-    include: { menuItem: true },
+  dto: CheckoutInput,
+): Promise<{
+  orderId: string;
+  paymentUrl?: string;
+  reference: string;
+}> => {
+  // 1. Fetch Dynamic Cart (Pricing, VAT, and automatic promos)
+  const { items, summary } = await getCart(userId);
+
+  if (!items.length || !summary) {
+    throw AppError.badRequest("Your cart is empty.");
+  }
+
+  // 2. Fetch the source SavedLocation
+  const loc = await prisma.savedLocation.findFirst({
+    where: { id: dto.savedLocationId, userId },
   });
-  if (!cartItems.length) throw AppError.badRequest("Your cart is empty.");
+  if (!loc) throw AppError.notFound("Saved location");
 
-  // ── Resolve delivery coordinates and address string ───────────────────────
-  // Either an existing Address row or a SavedLocation (converted on the fly)
-  let deliveryAddress: string;
-  let deliveryLat: number | null = null;
-  let deliveryLng: number | null = null;
+  // Fetch user email for Paystack
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+  if (!user) throw AppError.notFound("User not found");
 
-  if (dto.addressId) {
-    const address = await prisma.address.findFirst({
-      where: { id: dto.addressId, userId },
-    });
-    if (!address) throw AppError.notFound("Delivery address");
-    deliveryAddress = address.address;
-    deliveryLat = address.lat ?? null;
-    deliveryLng = address.lng ?? null;
-  } else if (dto.savedLocationId) {
-    const loc = await prisma.savedLocation.findFirst({
-      where: { id: dto.savedLocationId, userId },
-    });
-    if (!loc) throw AppError.notFound("Saved location");
+  const vendorId = items[0].menuItem.vendorId;
 
-    // Upsert an Address row so there's a persistent delivery record and the
-    // user's pinned location shows up in their address history
-    const upserted = await prisma.address.upsert({
-      where: {
-        // Use a stable compound identifier — same location re-used = same row
-        // We store lat/lng as part of the label to make it unique per pin
-        id: `loc_${loc.id}`,
-      },
-      update: {
-        address: loc.description,
-        lat: loc.latitude,
-        lng: loc.longitude,
-      },
-      create: {
-        id: `loc_${loc.id}`, // deterministic id — no duplicates
-        userId,
-        label: loc.name,
-        address: loc.description,
-        lat: loc.latitude,
-        lng: loc.longitude,
-        isDefault: false,
-        note: loc.instructions ?? null,
-      },
-    });
-    deliveryAddress = upserted.address;
-    deliveryLat = upserted.lat ?? null;
-    deliveryLng = upserted.lng ?? null;
-  } else {
-    throw AppError.badRequest(
-      "A delivery address or saved location is required.",
-    );
-  }
-
-  // Validate all items from the same vendor
-  const vendorIds = [...new Set(cartItems.map((ci) => ci.menuItem.vendorId))];
-  if (vendorIds.length > 1)
-    throw AppError.badRequest(
-      "All cart items must be from the same restaurant.",
-    );
-
-  const vendorId = vendorIds[0];
-  const subtotal = cartItems.reduce(
-    (s, ci) => s + ci.menuItem.price * ci.qty,
-    0,
-  );
-
-  const [deliveryFee, vatRate, serviceFee] = await Promise.all([
-    cfg.fees.deliveryBase(),
-    cfg.fees.vatRate(),
-    cfg.fees.serviceFee(),
-  ]);
-  const vat = Math.round(subtotal * vatRate);
-
-  // Apply promo code if provided
-  let discountAmount = 0;
-  let promotionId: string | undefined;
-  let promoCode: string | undefined;
-
-  if (dto.promoCode) {
-    const result = await applyPromoCode(
-      userId,
-      dto.promoCode,
-      subtotal,
-      vendorId,
-    );
-    if (!result.valid) throw AppError.badRequest(result.message);
-    discountAmount = result.discountAmount;
-    promotionId = result.promotionId;
-    promoCode = dto.promoCode.trim().toUpperCase();
-  }
-
-  const total =
-    Math.max(0, subtotal - discountAmount) + deliveryFee + vat + serviceFee;
-
+  // 3. Database Transaction: Create the Order
   const order = await prisma.$transaction(async (tx) => {
-    if (dto.paymentMethod === "wallet") {
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet || wallet.available < total)
-        throw AppError.badRequest("Insufficient wallet balance.");
-      await tx.wallet.update({
-        where: { userId },
-        data: { available: { decrement: total } },
-      });
-    }
+    // Standard ETA logic
+    const etaMinutes = 25;
+    const arrivalTime = new Date();
+    arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
 
-    const newOrder = await tx.order.create({
+    return await tx.order.create({
       data: {
         userId,
         vendorId,
-        totalAmount: total,
-        deliveryFee,
-        vat,
-        serviceFee,
-        // discountAmount,
-        // promoCode: promoCode ?? null,
-        // promotionId: promotionId ?? null,
-        paymentMethod: dto.paymentMethod as "wallet" | "card" | "bank_transfer",
-        deliveryAddress,
-        deliveryLat,
-        deliveryLng,
-        deliveryInstructions: dto.instructions ?? null,
+        totalAmount: summary.total,
+        deliveryFee: summary.deliveryBase || 0,
+        vat: summary.vat || 0,
+        serviceFee: summary.serviceFee || 0,
+        discountAmount: summary.discountAmount || 0,
+        paymentMethod: dto.paymentMethod,
+        status: "new", // Initial state
+
+        estimatedArrival: arrivalTime,
+        etaDuration: etaMinutes,
+        evidenceUrl: "",
+
+        // Mapping SavedLocation fields to Order columns
+        deliveryAddress: loc.description,
+        deliveryLat: loc.latitude,
+        deliveryLng: loc.longitude,
+        deliveryInstructions: dto.instructions ?? loc.instructions,
         contactMethod: dto.contactMethod ?? "in-app",
+
         items: {
-          create: cartItems.map((ci) => ({
-            menuItemId: ci.menuItemId,
-            name: ci.menuItem.name,
-            qty: ci.qty,
-            price: ci.menuItem.price,
+          create: items.map((item) => ({
+            menuItemId: item.menuItem.id,
+            name: item.menuItem.name,
+            qty: item.qty,
+            price: item.currentPrice,
           })),
         },
       },
     });
-
-    await tx.transaction.create({
-      data: {
-        userId,
-        orderId: newOrder.id,
-        type: "order_payment",
-        status: "successful",
-        title: promoCode
-          ? `Order Payment (${promoCode} — ₦${discountAmount.toLocaleString()} off)`
-          : "Order Payment",
-        amount: -total,
-      },
-    });
-
-    if (promotionId) {
-      await tx.promotion.update({
-        where: { id: promotionId },
-        data: { timesUsed: { increment: 1 } },
-      });
-    }
-
-    // await tx.cartItem.deleteMany({ where: { userId } });
-    return newOrder;
   });
 
-  // Fire notifications after transaction succeeds
-  const itemsSummary = cartItems
-    .map((ci) => `${ci.qty}x ${ci.menuItem.name}`)
+  // 4. Initialize Payment (Initiated Phase)
+  // This creates the 'initiated' transaction record in your DB and gets the Paystack URL
+  const payment = await paymentService.initializeCheckout(
+    user.email,
+    summary.total,
+    dto.paymentMethod as "card" | "bank_transfer",
+    "order",
+    vendorId,
+    userId,
+    order.id,
+  );
+
+  // 5. Cleanup: Clear the cart
+  await prisma.cartItem.deleteMany({ where: { userId } });
+
+  // 6. Notifications (Non-blocking)
+  const itemsSummary = items
+    .map((i) => `${i.qty}x ${i.menuItem.name}`)
     .join(", ");
+  notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, summary.total);
 
-  await notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, total);
-
-  const vendor = await prisma.vendorProfile.findUnique({
-    where: { id: vendorId },
-    select: { userId: true, storeName: true },
-  });
-  if (vendor) {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { fullName: true },
-    });
-    await notif.notifyVendorNewOrder(
-      vendor.userId,
-      order.orderId,
-      user?.fullName ?? "A customer",
-      itemsSummary,
-      total,
-    );
-  }
-
-  if (promotionId && discountAmount > 0 && promoCode) {
-    await notif.notifyPromoApplied(userId, promoCode, discountAmount);
-  }
-
-  return { orderId: order.orderId, discountAmount };
+  return {
+    orderId: order.orderId,
+    paymentUrl: payment.authorizationUrl,
+    reference: payment.reference as string,
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cart
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getCart = (userId: string) =>
-  prisma.cartItem.findMany({
+export const getCart = async (userId: string) => {
+  // 1. Fetch Cart Items with MenuItem and associated Images
+  const cartItems = await prisma.cartItem.findMany({
     where: { userId },
-    include: { menuItem: true },
+    include: {
+      menuItem: {
+        include: {
+          images: {
+            orderBy: { isMain: "desc" }, // Ensures main image is first
+          },
+        },
+      },
+    },
   });
+
+  if (cartItems.length === 0) return { items: [], summary: null };
+
+  // 2. Fetch Active Promotions for the Vendor
+  // (Assuming single-vendor cart restriction is enforced)
+  const vendorId = cartItems[0].menuItem.vendorId;
+  const now = new Date();
+
+  const activePromos = await prisma.promotion.findMany({
+    where: {
+      vendorId,
+      isActive: true,
+      startDate: { lte: now },
+      endDate: { gte: now },
+      promoCode: null, // Automatically applied (no code needed)
+    },
+  });
+
+  let runningSubtotal = 0;
+  let runningDiscountTotal = 0;
+
+  // 3. Map items and calculate per-item discounts
+  const mappedItems = cartItems.map((item) => {
+    const originalPrice = item.menuItem.price;
+    const itemSubtotal = originalPrice * item.qty;
+
+    // Check if this specific product has an active promotion
+    const promo = activePromos.find(
+      (p) => p.appliesTo === "all" || p.productIds.includes(item.menuItemId),
+    );
+
+    let currentPrice = originalPrice;
+    let discountLabel = null;
+
+    if (promo && promo.discountValue) {
+      if (promo.type === "percentage_discount") {
+        discountLabel = `${promo.discountValue}% off`;
+        currentPrice = originalPrice * (1 - promo.discountValue / 100);
+      } else if (promo.type === "fixed_discount") {
+        discountLabel = `₦${promo.discountValue} off`;
+        currentPrice = Math.max(0, originalPrice - promo.discountValue);
+      }
+    }
+
+    const itemFinalPrice = currentPrice * item.qty;
+    runningSubtotal += itemSubtotal;
+    runningDiscountTotal += itemSubtotal - itemFinalPrice;
+
+    return {
+      id: item.id,
+      qty: item.qty,
+      extras: item.extras, // From your Json field
+      discountLabel,
+      originalPrice,
+      currentPrice,
+      menuItem: {
+        id: item.menuItem.id,
+        name: item.menuItem.name,
+        price: item.menuItem.price,
+        vendorId: item.menuItem.vendorId,
+        images: item.menuItem.images.map((img) => ({
+          url: img.url,
+          main: img.isMain,
+        })),
+      },
+    };
+  });
+
+  const {
+    vatRate: getVatRate,
+    serviceFee: getServiceFee,
+    deliveryBase: getDeliveryBase,
+  } = cfg.fees;
+
+  const vatRate = await getVatRate();
+  const serviceFee = await getServiceFee();
+  const deliveryBase = await getDeliveryBase();
+  const baseTotal = runningSubtotal - runningDiscountTotal;
+  const vatAmount = baseTotal * vatRate;
+  const finalTotal = baseTotal + vatAmount + serviceFee;
+
+  return {
+    items: mappedItems,
+    summary: {
+      subtotal: runningSubtotal,
+      discountAmount: runningDiscountTotal,
+      vat: vatAmount,
+      total: finalTotal, // This is the new total the frontend footer will display
+      itemCount: mappedItems.length,
+      serviceFee: serviceFee,
+      deliveryBase: deliveryBase,
+    },
+  };
+};
 
 export const addToCart = async (
   userId: string,
@@ -940,7 +745,7 @@ export const getReferralStats = async (userId: string) => {
       orderBy: { createdAt: "desc" },
     }),
     prisma.transaction.aggregate({
-      where: { userId, type: "referral_bonus", status: "successful" },
+      where: { userId, type: "referral", status: "completed" },
       _sum: { amount: true },
     }),
   ]);
@@ -948,7 +753,7 @@ export const getReferralStats = async (userId: string) => {
   return {
     referralCode: user.referralCode,
     totalReferrals: referrals.length,
-    amountEarned: totalEarned._sum.amount ?? 0,
+    amountEarned: totalEarned._sum?.amount ?? 0,
     pendingReferrals: referrals.filter((r) => r.status === "pending").length,
     referrals,
   };
@@ -1071,6 +876,7 @@ export const toggleFavoriteRestaurant = async (
 export const toggleFavoriteProduct = async (
   userId: string,
   menuItemId: string,
+  vendorId: string,
 ): Promise<{ isFavorite: boolean }> => {
   const existing = await prisma.favoriteProduct.findUnique({
     where: { userId_menuItemId: { userId, menuItemId } },
@@ -1083,70 +889,11 @@ export const toggleFavoriteProduct = async (
     return { isFavorite: false };
   }
 
-  await prisma.favoriteProduct.create({ data: { userId, menuItemId } });
+  await prisma.favoriteProduct.create({
+    data: { userId, menuItemId, vendorId },
+  });
   return { isFavorite: true };
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Bank account CRUD (user)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getBankAccountById = async (userId: string, bankId: string) => {
-  const account = await prisma.bankAccount.findFirst({
-    where: { id: bankId, userId },
-  });
-  if (!account) throw AppError.notFound("Bank account");
-  return account;
-};
-
-export const updateBankAccount = async (
-  userId: string,
-  bankId: string,
-  data: {
-    bankName?: string;
-    bankCode?: string;
-    accountNumber?: string;
-    accountName?: string;
-  },
-): Promise<void> => {
-  const account = await prisma.bankAccount.findFirst({
-    where: { id: bankId, userId },
-  });
-  if (!account) throw AppError.notFound("Bank account");
-  await prisma.bankAccount.update({ where: { id: bankId }, data });
-};
-
-export const setDefaultBank = async (
-  userId: string,
-  bankId: string,
-): Promise<void> => {
-  const account = await prisma.bankAccount.findFirst({
-    where: { id: bankId, userId },
-  });
-  if (!account) throw AppError.notFound("Bank account");
-  await prisma.$transaction([
-    prisma.bankAccount.updateMany({
-      where: { userId },
-      data: { isDefault: false },
-    }),
-    prisma.bankAccount.update({
-      where: { id: bankId },
-      data: { isDefault: true },
-    }),
-  ]);
-};
-
-export const deleteBankAccount = async (
-  userId: string,
-  bankId: string,
-): Promise<void> => {
-  const account = await prisma.bankAccount.findFirst({
-    where: { id: bankId, userId },
-  });
-  if (!account) throw AppError.notFound("Bank account");
-  await prisma.bankAccount.delete({ where: { id: bankId } });
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Refund — delete / cancel
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1281,11 +1028,7 @@ export const getFavoriteProducts = async (userId: string) => {
     name: f.menuItem.name,
     description: f.menuItem.description,
     price: f.menuItem.price,
-    imageUrl: f.menuItem.imageUrl,
     isBestSeller: f.menuItem.isBestSeller,
-    calories: f.menuItem.calories,
-    prepTime: f.menuItem.prepTime,
-    serves: f.menuItem.serves,
     isFavorite: true,
     category: f.menuItem.categories[0]?.category.name ?? null,
     vendor: {

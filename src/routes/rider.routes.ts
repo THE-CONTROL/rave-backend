@@ -79,11 +79,8 @@ router.get("/reviews/stats", ctrl.getRatingStats);
 router.get("/reviews", ctrl.getReviews);
 
 // ── Earnings / Transactions ───────────────────────────────────────────────────
-router.get("/earnings", ctrl.getEarningsSummary);
-router.get("/funds", ctrl.getFundsSummary);
 router.get("/transactions", ctrl.getTransactions);
 router.get("/transactions/:id", ctrl.getTransactionById);
-router.post("/payout", validate(v.riderPayoutSchema), ctrl.requestPayout);
 
 // ── Bank Accounts ─────────────────────────────────────────────────────────────
 router.get("/banks", ctrl.getBankAccounts);
@@ -92,7 +89,7 @@ router.patch("/banks/:id/primary", ctrl.setPrimaryBank);
 router.delete("/banks/:id", ctrl.deleteBankAccount);
 router.get(
   "/banks/resolve",
-  validate(v.riderResolveBankSchema, "query"),
+  validate(v.resolveBankSchema, "query"),
   paymentCtrl.resolveAccount,
 );
 

@@ -13,6 +13,7 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
   TokenPair,
+  SignInResult,
 } from "../types";
 
 const SALT_ROUNDS = 12;
@@ -44,7 +45,6 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
       passwordHash,
       role: dto.role,
       referralCode: generateReferralCode(),
-      wallet: { create: {} },
       notificationSettings: { create: {} },
     },
   });
@@ -60,15 +60,8 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   }
 
   if (dto.role === "rider") {
-    const riderProfile = await prisma.riderProfile.create({
+    await prisma.riderProfile.create({
       data: { userId: user.id },
-    });
-    await prisma.riderEarningsSummary.create({
-      data: {
-        riderId: riderProfile.id,
-        availableBalance: 0,
-        pendingBalance: 0,
-      },
     });
   }
 
@@ -91,10 +84,15 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
 export const verifyEmail = async (
   dto: VerifyEmailDto,
-): Promise<{ purpose: string; tokens?: TokenPair }> => {
-  // Find the most recent unused OTP for this purpose
+): Promise<{ purpose: string; tokens?: TokenPair; role: Role }> => {
+  // Find the most recent unused OTP for this purpose AND user email
   const otpRecord = await prisma.otpCode.findFirst({
-    where: { code: dto.code, purpose: dto.purpose, used: false },
+    where: {
+      code: dto.code,
+      purpose: dto.purpose,
+      used: false,
+      user: { email: dto.email }, // Ensure code belongs to the requesting email
+    },
     include: { user: true },
     orderBy: { createdAt: "desc" },
   });
@@ -121,21 +119,23 @@ export const verifyEmail = async (
       otpRecord.user.email,
     );
 
-    await sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName);
+    await sendWelcomeEmail(
+      "lawsonekhorutomwen@gmail.com",
+      otpRecord.user.fullName,
+    );
 
-    return { purpose: "verify-account", tokens };
+    return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
 
-  return { purpose: "reset-password" };
+  // For reset-password, we return the role so frontend can manage the UI state
+  return { purpose: "reset-password", role: otpRecord.user.role };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sign In
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const signIn = async (
-  dto: SignInDto,
-): Promise<{ status: string; tokens: TokenPair }> => {
+export const signIn = async (dto: SignInDto): Promise<SignInResult> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
 
   if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
@@ -151,7 +151,12 @@ export const signIn = async (
   }
 
   const tokens = await _createSession(user.id, user.role, user.email);
-  return { status: "complete", tokens };
+
+  return {
+    status: "complete",
+    role: user.role as any, // Return the role for frontend routing
+    tokens,
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,9 +190,8 @@ export const refreshTokens = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
-  // Always respond with the same message to avoid email enumeration
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
-  if (!user) return;
+  if (!user) return; // Silent return for security
 
   const otp = generateOtp();
   await prisma.otpCode.create({
@@ -210,36 +214,23 @@ export const resetPassword = async (
   userId: string,
   dto: ResetPasswordDto,
 ): Promise<void> => {
-  // 1. Find the user to get the current hash
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-  });
+  const user = await prisma.user.findUnique({ where: { id: userId } });
 
   if (!user) {
     throw AppError.unauthorized("User not found.");
   }
 
-  // 2. Verify current password
-  const isMatch = await bcrypt.compare(dto.password, user.passwordHash);
+  // Verification that password and confirmPassword match is handled by Zod validator
+  // We do NOT check the current password here because this is the Forgot Password flow
 
-  if (!isMatch) {
-    throw AppError.badRequest("The current password provided is incorrect.");
-  }
-
-  const newPasswordsMatch = dto.password === dto.confirmPassword;
-  if (!newPasswordsMatch) {
-    throw AppError.badRequest("The passwords do not match.");
-  }
-
-  // 3. Hash the NEW password
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-  // 4. Update user and invalidate sessions
   await prisma.user.update({
     where: { id: userId },
     data: { passwordHash },
   });
 
+  // Security: Invalidate all existing refresh tokens (sessions)
   await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
@@ -251,7 +242,7 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
-  // Invalidate old codes
+  // Invalidate old unused codes for this user
   await prisma.otpCode.updateMany({
     where: { userId: user.id, used: false },
     data: { used: true },
@@ -282,7 +273,6 @@ export const signOut = async (
   if (refreshToken) {
     await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
   } else {
-    // Revoke all sessions
     await prisma.refreshToken.deleteMany({ where: { userId } });
   }
 };
@@ -312,7 +302,6 @@ const _createSession = async (
 ): Promise<TokenPair> => {
   const tokenPair = issueTokenPair(userId, role, email);
 
-  const expiresAt = new Date(tokenPair.expiresAt * 1000);
   // Refresh token lives for 30 days
   const refreshExpiry = new Date();
   refreshExpiry.setDate(refreshExpiry.getDate() + 30);

@@ -96,21 +96,28 @@ export interface ResetPasswordDto {
   confirmPassword: string;
 }
 
+export interface SignInResult {
+  status: string;
+  role: "user" | "vendor" | "rider"; // Added role
+  tokens: TokenPair;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Checkout
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface CheckoutDto {
-  /** ID of an Address row — mutually exclusive with savedLocationId */
-  addressId?: string;
-  /** ID of a SavedLocation row — converted to a temp Address on the fly */
-  savedLocationId?: string;
-  paymentMethod: "wallet" | "card" | "bank_transfer";
-  selectedCardId?: string;
-  usePartialWallet?: boolean;
+/**
+ * CheckoutInput Type
+ * Reflects the final refined requirements:
+ * - Strictly uses savedLocationId (UUID)
+ * - Restricts payment to card or bank_transfer (Paystack flow)
+ * - Includes optional instructions and contact preferences
+ */
+export interface CheckoutInput {
+  savedLocationId: string;
+  paymentMethod: "card" | "bank_transfer";
   instructions?: string;
-  contactMethod?: "in-app" | "normal";
-  promoCode?: string;
+  contactMethod: "in-app" | "normal";
 }
 
 // Re-export notification payload types
