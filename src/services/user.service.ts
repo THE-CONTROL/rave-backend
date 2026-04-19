@@ -390,6 +390,14 @@ export const processCheckout = async (
 
   const vendorId = items[0].menuItem.vendorId;
 
+  // ── Check auto-accept ───────────────────────────────────────────────────
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: vendorId },
+    select: { autoAcceptOrders: true },
+  });
+
+  const initialStatus = vendor?.autoAcceptOrders ? "preparing" : "new";
+
   const order = await prisma.$transaction(async (tx) => {
     const etaMinutes = 25;
     const arrivalTime = new Date();
@@ -405,7 +413,7 @@ export const processCheckout = async (
         serviceFee: summary.serviceFee || 0,
         discountAmount: summary.discountAmount || 0,
         paymentMethod: dto.paymentMethod,
-        status: "new",
+        status: initialStatus,
         estimatedArrival: arrivalTime,
         etaDuration: etaMinutes,
         evidenceUrl: "",
@@ -460,9 +468,8 @@ export const getCart = async (userId: string) => {
     include: {
       menuItem: {
         include: {
-          images: {
-            orderBy: { isMain: "desc" },
-          },
+          images: { orderBy: { isMain: "desc" } },
+          ingredients: true, // ← fetch ingredients so we can price extras
         },
       },
     },
@@ -487,37 +494,68 @@ export const getCart = async (userId: string) => {
   let runningDiscountTotal = 0;
 
   const mappedItems = cartItems.map((item) => {
-    const originalPrice = item.menuItem.price;
-    const itemSubtotal = originalPrice * item.qty;
+    const basePrice = item.menuItem.price;
 
+    // ── Calculate extras price ────────────────────────────────────────────
+    // extras is stored as JSON: { ingredientId: true, ... } or string[]
+    // Support both shapes defensively
+    const extras = item.extras as any;
+    let extrasPrice = 0;
+    const selectedExtras: { id: string; name: string; price: number }[] = [];
+
+    if (extras && item.menuItem.ingredients.length > 0) {
+      const selectedIds: string[] = Array.isArray(extras)
+        ? extras
+        : typeof extras === "object"
+          ? Object.keys(extras).filter((k) => extras[k] === true)
+          : [];
+
+      for (const ing of item.menuItem.ingredients) {
+        if (ing.isOptional && selectedIds.includes(ing.id)) {
+          extrasPrice += ing.price;
+          selectedExtras.push({ id: ing.id, name: ing.name, price: ing.price });
+        }
+      }
+    }
+
+    // ── Base price + extras per unit ──────────────────────────────────────
+    const unitPrice = basePrice + extrasPrice;
+    const itemSubtotal = unitPrice * item.qty;
+
+    // ── Apply promotions (on base price only, not extras) ─────────────────
     const promo = activePromos.find(
       (p) => p.appliesTo === "all" || p.productIds.includes(item.menuItemId),
     );
 
-    let currentPrice = originalPrice;
+    let discountedBasePrice = basePrice;
     let discountLabel = null;
 
     if (promo && promo.discountValue) {
       if (promo.type === "percentage_discount") {
         discountLabel = `${promo.discountValue}% off`;
-        currentPrice = originalPrice * (1 - promo.discountValue / 100);
+        discountedBasePrice = basePrice * (1 - promo.discountValue / 100);
       } else if (promo.type === "fixed_discount") {
         discountLabel = `₦${promo.discountValue} off`;
-        currentPrice = Math.max(0, originalPrice - promo.discountValue);
+        discountedBasePrice = Math.max(0, basePrice - promo.discountValue);
       }
     }
 
-    const itemFinalPrice = currentPrice * item.qty;
-    runningSubtotal += itemSubtotal;
-    runningDiscountTotal += itemSubtotal - itemFinalPrice;
+    const currentUnitPrice = discountedBasePrice + extrasPrice;
+    const itemFinalPrice = currentUnitPrice * item.qty;
+    const originalSubtotal = unitPrice * item.qty;
+
+    runningSubtotal += originalSubtotal;
+    runningDiscountTotal += originalSubtotal - itemFinalPrice;
 
     return {
       id: item.id,
       qty: item.qty,
       extras: item.extras,
+      selectedExtras,
+      extrasPrice,
       discountLabel,
-      originalPrice,
-      currentPrice,
+      originalPrice: unitPrice, // base + extras
+      currentPrice: currentUnitPrice, // discounted base + extras
       menuItem: {
         id: item.menuItem.id,
         name: item.menuItem.name,
@@ -898,7 +936,6 @@ export const toggleFavoriteRestaurant = async (
 export const toggleFavoriteProduct = async (
   userId: string,
   menuItemId: string,
-  vendorId: string,
 ): Promise<{ isFavorite: boolean }> => {
   const existing = await prisma.favoriteProduct.findUnique({
     where: { userId_menuItemId: { userId, menuItemId } },
@@ -911,8 +948,14 @@ export const toggleFavoriteProduct = async (
     return { isFavorite: false };
   }
 
+  // Look up vendorId from the menu item — don't trust the client to send it
+  const menuItem = await prisma.menuItem.findUniqueOrThrow({
+    where: { id: menuItemId },
+    select: { vendorId: true },
+  });
+
   await prisma.favoriteProduct.create({
-    data: { userId, menuItemId, vendorId },
+    data: { userId, menuItemId, vendorId: menuItem.vendorId },
   });
   return { isFavorite: true };
 };
@@ -992,8 +1035,6 @@ export const getUsualOrders = async (userId: string) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getFavoriteRestaurants = async (userId: string) => {
-  const deliveryBase = await cfg.fees.deliveryBase();
-
   const favorites = await prisma.favoriteRestaurant.findMany({
     where: { userId },
     include: { vendor: true },
@@ -1007,14 +1048,17 @@ export const getFavoriteRestaurants = async (userId: string) => {
       return {
         id: v.id,
         name: v.storeName,
-        image: v.bannerUrl,
-        logo: v.logoUrl,
+        image: v.bannerUrl ?? null,
+        logo: v.logoUrl ?? null,
         rating: v.averageRating,
         reviewCount: v.totalReviews,
         isOpen: v.isOpen,
-        address: v.address,
-        positiveReviews: (v as any).positiveReviews,
-        closesIn: (v as any).hoursSummary ?? null,
+        address: v.address ?? null,
+        deliveryTime: "25-35 mins",
+        deliveryFee: 0,
+        positiveReviews: v.positiveReviews ?? 0,
+        closesIn: v.hoursSummary ?? null,
+        isYourUsual: false,
         isFavorite: true,
       };
     });
@@ -1035,7 +1079,11 @@ export const getFavoriteProducts = async (userId: string) => {
               averageRating: true,
             },
           },
-          categories: { include: { category: { select: { name: true } } } },
+          images: true,
+          ingredients: true,
+          categories: {
+            include: { category: { select: { id: true, name: true } } },
+          },
         },
       },
     },
@@ -1045,18 +1093,41 @@ export const getFavoriteProducts = async (userId: string) => {
   return favorites.map((f) => ({
     id: f.menuItem.id,
     name: f.menuItem.name,
-    description: f.menuItem.description,
+    description: f.menuItem.description ?? null,
     price: f.menuItem.price,
+    isActive: f.menuItem.isActive,
     isBestSeller: f.menuItem.isBestSeller,
+    isCustomizable: f.menuItem.isCustomizable,
+    images: f.menuItem.images.map((img) => ({
+      id: img.id,
+      url: img.url,
+      isMain: img.isMain,
+    })),
+    ingredients: f.menuItem.ingredients.map((ing) => ({
+      id: ing.id,
+      name: ing.name,
+      portion: ing.portion,
+      mealType: ing.mealType,
+      isOptional: ing.isOptional,
+      price: ing.price ?? 0,
+    })),
+    rating: 0,
+    reviewCount: 0,
     isFavorite: true,
-    category: f.menuItem.categories[0]?.category.name ?? null,
     vendor: {
       id: f.menuItem.vendor.id,
       storeName: f.menuItem.vendor.storeName,
-      logoUrl: f.menuItem.vendor.logoUrl,
+      logoUrl: f.menuItem.vendor.logoUrl ?? null,
       isOpen: f.menuItem.vendor.isOpen,
       averageRating: f.menuItem.vendor.averageRating,
     },
+    categories: f.menuItem.categories.map((c) => ({
+      category: {
+        id: c.category.id,
+        name: c.category.name,
+      },
+    })),
+    customGroups: [],
   }));
 };
 

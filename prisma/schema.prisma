@@ -231,6 +231,7 @@ model VendorProfile {
   reviewsReceived     Review[]             @relation("VendorReviews")
   favoriteRestaurants FavoriteRestaurant[]
   favoriteProducts FavoriteProduct[]
+  optionGroups  OptionGroup[]
 
   @@map("vendor_profiles")
 }
@@ -1008,4 +1009,46 @@ model SearchHistory {
   createdAt DateTime @default(now())
 
   @@map("search_history")
+}
+
+model OptionGroup {
+  id               String         @id @default(uuid())
+  vendorId         String
+  vendor           VendorProfile  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name             String
+  customizationType String        // "quantity_selector" | "choice_selector"
+  baseQuantity     Int?
+  pricePerExtra    Float?
+  quantityPerExtra Int?
+  minQuantity      Int?
+  maxQuantity      Int?
+  options          OptionItem[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@map("option_groups")
+}
+
+model OptionItem {
+  id            String       @id @default(uuid())
+  groupId       String
+  group         OptionGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name          String
+  sizes         OptionSize[]
+  sortOrder     Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@map("option_items")
+}
+
+model OptionSize {
+  id         String     @id @default(uuid())
+  itemId     String
+  item       OptionItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  name       String     // "Small" | "Medium" | "Large"
+  extraPrice Float      @default(0) // 0 = Included
+  sortOrder  Int        @default(0)
+
+  @@map("option_sizes")
 }

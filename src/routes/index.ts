@@ -8,6 +8,7 @@ import catalogRoutes from "./catalog.routes";
 import policyRoutes from "./policy.routes";
 import adRoutes from "./ad.routes";
 import paymentRoutes from "./payment.routes";
+import optionGroupRoutes from "./optionGroup.routes";
 
 const router = Router();
 
@@ -28,5 +29,6 @@ router.use("/catalog", catalogRoutes);
 router.use("/policy", policyRoutes);
 router.use("/ads", adRoutes);
 router.use("/payments", paymentRoutes);
+router.use("/vendor/option-groups", optionGroupRoutes);
 
 export default router;

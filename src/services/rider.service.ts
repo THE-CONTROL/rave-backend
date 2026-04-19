@@ -861,6 +861,13 @@ export const verifyVendorOtp = async (
   return { success: true };
 };
 
+import axios from "axios";
+
+const ps = axios.create({
+  baseURL: "https://api.paystack.co",
+  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+});
+
 export const verifyCustomerOtp = async (
   userId: string,
   deliveryId: string,
@@ -870,6 +877,7 @@ export const verifyCustomerOtp = async (
 
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
+    include: { order: true },
   });
   if (!delivery) throw AppError.notFound("Delivery");
 
@@ -878,12 +886,120 @@ export const verifyCustomerOtp = async (
 
   if (stored !== given) throw AppError.badRequest("Invalid OTP code.");
 
-  await prisma.delivery.update({
-    where: { id: deliveryId },
-    data: { customerOtpVerified: true },
+  const commission = await cfg.fees.vendorCommission();
+  const earnings = delivery.order.deliveryFee * (1 - commission);
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Mark delivery as verified and delivered
+    await tx.delivery.update({
+      where: { id: deliveryId },
+      data: {
+        customerOtpVerified: true,
+        status: "delivered",
+        deliveredAt: new Date(),
+        earnings,
+      },
+    });
+
+    // 2. Mark order as completed
+    await tx.order.update({
+      where: { id: delivery.orderId },
+      data: { status: "completed" },
+    });
+
+    // 3. Update rider stats
+    await tx.riderProfile.update({
+      where: { id: rider.id },
+      data: {
+        totalDeliveries: { increment: 1 },
+        totalEarnings: { increment: earnings },
+      },
+    });
+
+    // 4. Record payout in ledger
+    await tx.transaction.create({
+      data: {
+        riderId: rider.id,
+        orderId: delivery.orderId,
+        type: "payment",
+        status: "initiated",
+        title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
+        amount: earnings,
+        subtotal: delivery.order.deliveryFee,
+        fee: delivery.order.deliveryFee * commission,
+        paymentMethod: "bank_transfer",
+      },
+    });
   });
 
+  // 5. Trigger bank transfer after DB commits (non-blocking)
+  _disburseRiderEarnings(rider.id, earnings, delivery.orderId).catch((err) => {
+    console.error(
+      `[PAYOUT] Failed to disburse to rider ${rider.id}:`,
+      err?.message,
+    );
+  });
+
+  // 6. Notify user
+  await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
+
   return { success: true };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal: Disburse rider earnings via Paystack transfer
+// ─────────────────────────────────────────────────────────────────────────────
+const _disburseRiderEarnings = async (
+  riderId: string,
+  amount: number,
+  orderId: string,
+): Promise<void> => {
+  const bankAccount = await prisma.bankAccount.findFirst({
+    where: { riderId, isPrimary: true },
+  });
+
+  if (!bankAccount) {
+    console.warn(`[PAYOUT] No primary bank account for rider ${riderId}.`);
+    return;
+  }
+
+  try {
+    // Create transfer recipient
+    const recipientRes = await ps.post("/transferrecipient", {
+      type: "nuban",
+      name: bankAccount.accountName,
+      account_number: bankAccount.accountNumber,
+      bank_code: bankAccount.bankCode,
+      currency: "NGN",
+    });
+
+    const recipientCode = recipientRes.data.data.recipient_code;
+
+    // Initiate transfer
+    const transferRes = await ps.post("/transfer", {
+      source: "balance",
+      amount: Math.round(amount * 100), // Kobo
+      recipient: recipientCode,
+      reason: `Rave delivery payout - Order #${orderId}`,
+    });
+
+    const transferCode = transferRes.data.data.transfer_code;
+
+    // Mark as completed
+    await prisma.transaction.updateMany({
+      where: { riderId, orderId, type: "payment", status: "initiated" },
+      data: { status: "completed", reference: transferCode },
+    });
+
+    console.log(
+      `[PAYOUT] ₦${amount} disbursed to rider ${riderId} — transfer ${transferCode}`,
+    );
+  } catch (err: any) {
+    const reason =
+      err?.response?.data?.message ?? err?.message ?? "Paystack transfer error";
+
+    throw new Error(`Paystack transfer failed: ${reason}`);
+  }
 };
 
 export const resendOtp = async (

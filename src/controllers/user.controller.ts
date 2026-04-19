@@ -205,7 +205,7 @@ export const toggleFavoriteProduct = asyncHandler(async (req, res) => {
   const result = await userService.toggleFavoriteProduct(
     uid(req),
     req.params.menuItemId,
-    req.params.vendorId,
+    // ← removed vendorId, service now fetches it itself
   );
   ok(
     res,

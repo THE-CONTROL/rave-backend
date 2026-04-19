@@ -9,7 +9,6 @@ import {
   estimateEtaMinutes,
 } from "../utils";
 import { PaginationQuery } from "../types";
-import { cfg } from "./config.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Restaurants (public)
@@ -170,7 +169,7 @@ export const search = async (
   const results: Record<string, unknown> = {};
 
   if (type === "restaurants" || type === "all") {
-    results.restaurants = await prisma.vendorProfile.findMany({
+    const vendors = await prisma.vendorProfile.findMany({
       where: {
         storeName: { contains: searchTerm, mode: "insensitive" },
       },
@@ -178,30 +177,97 @@ export const search = async (
         id: true,
         storeName: true,
         logoUrl: true,
+        bannerUrl: true,
         isOpen: true,
         averageRating: true,
+        totalReviews: true,
         address: true,
+        positiveReviews: true,
       },
       skip,
       take: limit,
     });
+
+    results.restaurants = vendors.map((v) => ({
+      id: v.id,
+      name: v.storeName,
+      image: v.bannerUrl ?? null,
+      logo: v.logoUrl ?? null,
+      rating: v.averageRating,
+      reviewCount: v.totalReviews,
+      isOpen: v.isOpen,
+      address: v.address ?? null,
+      positiveReviews: v.positiveReviews,
+      distanceKm: null,
+      distanceLabel: null,
+      closesIn: null,
+      isYourUsual: false,
+      isFavorite: false,
+      deliveryTime: "25-35 mins",
+    }));
   }
 
   if (type === "foods" || type === "all") {
-    results.foods = await prisma.menuItem.findMany({
+    const foods = await prisma.menuItem.findMany({
       where: {
         isActive: true,
         name: { contains: searchTerm, mode: "insensitive" },
       },
       include: {
-        vendor: { select: { id: true, storeName: true, logoUrl: true } },
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            logoUrl: true,
+            isOpen: true,
+            averageRating: true,
+          },
+        },
+        images: { orderBy: { isMain: "desc" } },
+        ingredients: true,
+        categories: {
+          include: { category: { select: { id: true, name: true } } },
+        },
       },
       skip,
       take: limit,
     });
-  }
 
-  return { ...results, meta: buildMeta(0, page, limit) };
+    results.foods = foods.map((f) => ({
+      id: f.id,
+      name: f.name,
+      description: f.description,
+      price: f.price,
+      isActive: f.isActive,
+      isBestSeller: f.isBestSeller,
+      isCustomizable: f.isCustomizable,
+      images: f.images.map((img) => ({
+        id: img.id,
+        url: img.url,
+        isMain: img.isMain,
+      })),
+      ingredients: f.ingredients.map((ing) => ({
+        id: ing.id,
+        name: ing.name,
+        portion: ing.portion,
+        mealType: ing.mealType,
+        isOptional: ing.isOptional,
+        price: ing.price ?? 0,
+      })),
+      rating: 0,
+      reviewCount: 0,
+      isFavorite: false,
+      vendor: {
+        id: f.vendor.id,
+        storeName: f.vendor.storeName,
+        logoUrl: f.vendor.logoUrl,
+        isOpen: f.vendor.isOpen,
+        averageRating: f.vendor.averageRating,
+      },
+      categories: f.categories,
+      customGroups: [],
+    }));
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
