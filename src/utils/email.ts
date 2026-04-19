@@ -32,15 +32,35 @@ export const sendOtpEmail = (
   otp: string,
   purpose: string,
 ): Promise<void> => {
-  const subject =
-    purpose === "verify-account"
-      ? "Verify your Rave account"
-      : "Reset your Rave password";
+  const configs: Record<
+    string,
+    { subject: string; action: string; context?: string }
+  > = {
+    "verify-account": {
+      subject: "Verify your Rave account",
+      action: "verify your account",
+    },
+    "reset-password": {
+      subject: "Reset your Rave password",
+      action: "reset your password",
+    },
+    "order-delivery-code": {
+      subject: "Your delivery confirmation code",
+      action: "confirm your delivery",
+      context: "Share this code with your rider when they arrive at your door.",
+    },
+    "vendor-pickup-code": {
+      subject: "Order pickup confirmation code",
+      action: "confirm the rider pickup",
+      context:
+        "Share this code with the rider when they arrive to collect the order.",
+    },
+  };
 
-  const action =
-    purpose === "verify-account"
-      ? "verify your account"
-      : "reset your password";
+  const { subject, action, context } = configs[purpose] ?? {
+    subject: "Your Rave OTP",
+    action: "complete your request",
+  };
 
   return sendMail({
     to,
@@ -49,6 +69,7 @@ export const sendOtpEmail = (
       <div style="font-family:sans-serif;max-width:480px;margin:auto">
         <h2>Hello, ${name}!</h2>
         <p>Use the code below to ${action}. It expires in <strong>10 minutes</strong>.</p>
+        ${context ? `<p style="color:#555;font-size:14px">${context}</p>` : ""}
         <div style="font-size:36px;font-weight:bold;letter-spacing:8px;text-align:center;
                     padding:20px;background:#f4f4f4;border-radius:8px;margin:20px 0">
           ${otp}

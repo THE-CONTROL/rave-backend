@@ -14,6 +14,12 @@ import { PaginationQuery } from "../types";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import { sendOtpEmail } from "@/utils/email";
+import axios from "axios";
+
+const ps = axios.create({
+  baseURL: "https://api.paystack.co",
+  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OTP helpers
@@ -861,13 +867,6 @@ export const verifyVendorOtp = async (
   return { success: true };
 };
 
-import axios from "axios";
-
-const ps = axios.create({
-  baseURL: "https://api.paystack.co",
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
-});
-
 export const verifyCustomerOtp = async (
   userId: string,
   deliveryId: string,
@@ -907,12 +906,14 @@ export const verifyCustomerOtp = async (
       data: { status: "completed" },
     });
 
-    // 3. Update rider stats
+    // 3. Update rider profile stats
     await tx.riderProfile.update({
       where: { id: rider.id },
       data: {
         totalDeliveries: { increment: 1 },
         totalEarnings: { increment: earnings },
+        // Keep isOnline state — rider stays online after a delivery
+        // averageRating is updated separately when a review is submitted
       },
     });
 
