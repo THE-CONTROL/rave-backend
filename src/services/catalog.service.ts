@@ -396,6 +396,7 @@ export const getItemsByCategory = async (
       where,
       include: {
         vendor: { select: { id: true, storeName: true, logoUrl: true } },
+        images: { select: { id: true, url: true, isMain: true } },
       },
       orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
       skip,
