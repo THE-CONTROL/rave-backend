@@ -46,10 +46,18 @@ export const getRestaurantDetails = async (
 
 export const getRestaurantMenu = async (
   vendorId: string,
+  userId?: string | null,
   categoryId?: string,
 ) => {
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
+    select: {
+      id: true,
+      storeName: true,
+      logoUrl: true,
+      isOpen: true,
+      averageRating: true,
+    },
   });
 
   if (!vendor) throw AppError.notFound("Restaurant");
@@ -61,13 +69,83 @@ export const getRestaurantMenu = async (
       ...(categoryId ? { categories: { some: { categoryId } } } : {}),
     },
     include: {
-      categories: { include: { category: true } },
+      categories: {
+        include: { category: { select: { id: true, name: true } } },
+      },
       images: true,
+      ingredients: true,
+      favorites: userId ? { where: { userId } } : false,
     },
     orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
   });
 
-  return items;
+  return items.map((item) => {
+    // ── customGroups from optional ingredients grouped by mealType ────────
+    const optionalIngredients = item.ingredients.filter(
+      (ing) => ing.isOptional,
+    );
+    const groupMap = new Map<string, typeof optionalIngredients>();
+    for (const ing of optionalIngredients) {
+      const key = ing.mealType || "Add-ons";
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key)!.push(ing);
+    }
+    const customGroups = Array.from(groupMap.entries()).map(
+      ([mealType, ings]) => ({
+        id: mealType,
+        title: mealType,
+        type: "optional",
+        required: false,
+        options: ings.map((ing) => ({
+          id: ing.id,
+          name: ing.name,
+          extraPrice: ing.price ?? 0,
+        })),
+      }),
+    );
+
+    return {
+      id: item.id,
+      name: item.name,
+      description: item.description ?? null,
+      price: item.price,
+      isActive: item.isActive,
+      isBestSeller: item.isBestSeller,
+      isCustomizable: item.isCustomizable,
+      images: item.images.map((img) => ({
+        id: img.id,
+        url: img.url,
+        isMain: img.isMain,
+      })),
+      ingredients: item.ingredients.map((ing) => ({
+        id: ing.id,
+        name: ing.name,
+        portion: ing.portion,
+        mealType: ing.mealType,
+        isOptional: ing.isOptional,
+        price: ing.price ?? 0,
+      })),
+      // Rating comes from the vendor's overall rating since
+      // MenuItem has no direct reviews relation
+      rating: vendor.averageRating,
+      reviewCount: 0,
+      isFavorite: userId ? (item.favorites as any[]).length > 0 : false,
+      vendor: {
+        id: vendor.id,
+        storeName: vendor.storeName,
+        logoUrl: vendor.logoUrl ?? null,
+        isOpen: vendor.isOpen,
+        averageRating: vendor.averageRating,
+      },
+      categories: item.categories.map((c) => ({
+        category: {
+          id: c.category.id,
+          name: c.category.name,
+        },
+      })),
+      customGroups,
+    };
+  });
 };
 
 export const getRestaurantCategories = (vendorId: string) =>
