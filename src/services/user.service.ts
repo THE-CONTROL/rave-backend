@@ -580,7 +580,7 @@ export const getCart = async (userId: string) => {
   const deliveryBase = await getDeliveryBase();
   const baseTotal = runningSubtotal - runningDiscountTotal;
   const vatAmount = baseTotal * vatRate;
-  const finalTotal = baseTotal + vatAmount + serviceFee;
+  const finalTotal = baseTotal + vatAmount + serviceFee + deliveryBase;
 
   return {
     items: mappedItems,
