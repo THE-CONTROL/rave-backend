@@ -1,3 +1,4 @@
+// src/services/auth.service.ts
 import bcrypt from "bcryptjs";
 import { Role } from "@prisma/client";
 import { prisma } from "../config/database";
@@ -36,36 +37,35 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-  // ── Batch user + profile creation in one transaction ─────────────────────
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({
-      data: {
-        fullName: dto.name,
-        email: dto.email,
-        phone: dto.phoneNumber,
-        passwordHash,
-        role: dto.role,
-        referralCode: generateReferralCode(),
-        notificationSettings: { create: {} },
-      },
-    });
-
-    if (dto.role === "vendor") {
-      await tx.vendorProfile.create({
-        data: { userId: created.id, storeName: `${dto.name}'s Store` },
-      });
-    }
-
-    if (dto.role === "rider") {
-      await tx.riderProfile.create({ data: { userId: created.id } });
-    }
-
-    return created;
+  const user = await prisma.user.create({
+    data: {
+      fullName: dto.name,
+      email: dto.email,
+      phone: dto.phoneNumber,
+      passwordHash,
+      role: dto.role,
+      referralCode: generateReferralCode(),
+      notificationSettings: { create: {} },
+    },
   });
 
-  // ── OTP persisted before responding; email is fire-and-forget ─────────────
-  const otp = generateOtp();
+  // Create role-specific profile stubs
+  if (dto.role === "vendor") {
+    await prisma.vendorProfile.create({
+      data: {
+        userId: user.id,
+        storeName: dto.name + "'s Store",
+      },
+    });
+  }
 
+  if (dto.role === "rider") {
+    await prisma.riderProfile.create({
+      data: { userId: user.id },
+    });
+  }
+
+  const otp = generateOtp();
   await prisma.otpCode.create({
     data: {
       code: otp,
@@ -75,8 +75,7 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     },
   });
 
-  // sendOtpEmail is now void — fire-and-forget is handled inside the helper
-  sendOtpEmail(user.email, user.fullName, otp, "verify-account");
+  await sendOtpEmail(user.email, user.fullName, otp, "verify-account");
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,12 +85,13 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 export const verifyEmail = async (
   dto: VerifyEmailDto,
 ): Promise<{ purpose: string; tokens?: TokenPair; role: Role }> => {
+  // Find the most recent unused OTP for this purpose AND user email
   const otpRecord = await prisma.otpCode.findFirst({
     where: {
       code: dto.code,
       purpose: dto.purpose,
       used: false,
-      user: { email: dto.email },
+      user: { email: dto.email }, // Ensure code belongs to the requesting email
     },
     include: { user: true },
     orderBy: { createdAt: "desc" },
@@ -101,32 +101,33 @@ export const verifyEmail = async (
     throw AppError.badRequest("Invalid or expired OTP code.");
   }
 
+  // Mark OTP as used
   await prisma.otpCode.update({
     where: { id: otpRecord.id },
     data: { used: true },
   });
 
   if (dto.purpose === "verify-account") {
-    // Mark verified + open session in parallel — independent operations
-    const [tokens] = await Promise.all([
-      _createSession(
-        otpRecord.user.id,
-        otpRecord.user.role,
-        otpRecord.user.email,
-      ),
-      prisma.user.update({
-        where: { id: otpRecord.userId },
-        data: { isEmailVerified: true },
-      }),
-    ]);
+    await prisma.user.update({
+      where: { id: otpRecord.userId },
+      data: { isEmailVerified: true },
+    });
 
-    // Fire-and-forget — welcome email must never delay the login response.
-    // Fixed: was previously sending to a hardcoded address.
-    sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName);
+    const tokens = await _createSession(
+      otpRecord.user.id,
+      otpRecord.user.role,
+      otpRecord.user.email,
+    );
+
+    await sendWelcomeEmail(
+      "lawsonekhorutomwen@gmail.com",
+      otpRecord.user.fullName,
+    );
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
 
+  // For reset-password, we return the role so frontend can manage the UI state
   return { purpose: "reset-password", role: otpRecord.user.role };
 };
 
@@ -153,7 +154,7 @@ export const signIn = async (dto: SignInDto): Promise<SignInResult> => {
 
   return {
     status: "complete",
-    role: user.role as any,
+    role: user.role as any, // Return the role for frontend routing
     tokens,
   };
 };
@@ -175,6 +176,7 @@ export const refreshTokens = async (
     throw AppError.unauthorized("Refresh token is invalid or expired.");
   }
 
+  // Rotate: delete old, issue new
   await prisma.refreshToken.delete({ where: { id: stored.id } });
 
   const user = await prisma.user.findUnique({ where: { id: payload.sub } });
@@ -189,10 +191,9 @@ export const refreshTokens = async (
 
 export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
-  if (!user) return; // Silent return — don't leak whether the email exists
+  if (!user) return; // Silent return for security
 
   const otp = generateOtp();
-
   await prisma.otpCode.create({
     data: {
       code: otp,
@@ -202,7 +203,7 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
     },
   });
 
-  sendOtpEmail(user.email, user.fullName, otp, "reset-password");
+  await sendOtpEmail(user.email, user.fullName, otp, "reset-password");
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,16 +220,18 @@ export const resetPassword = async (
     throw AppError.unauthorized("User not found.");
   }
 
+  // Verification that password and confirmPassword match is handled by Zod validator
+  // We do NOT check the current password here because this is the Forgot Password flow
+
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-  // Invalidate all sessions + update password atomically
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: userId },
-      data: { passwordHash },
-    }),
-    prisma.refreshToken.deleteMany({ where: { userId } }),
-  ]);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash },
+  });
+
+  // Security: Invalidate all existing refresh tokens (sessions)
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,25 +242,24 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
-  // Invalidate all previous unused codes + create new one atomically
+  // Invalidate old unused codes for this user
+  await prisma.otpCode.updateMany({
+    where: { userId: user.id, used: false },
+    data: { used: true },
+  });
+
   const otp = generateOtp();
 
-  await prisma.$transaction([
-    prisma.otpCode.updateMany({
-      where: { userId: user.id, used: false },
-      data: { used: true },
-    }),
-    prisma.otpCode.create({
-      data: {
-        code: otp,
-        purpose: dto.purpose,
-        userId: user.id,
-        expiresAt: otpExpiresAt(10),
-      },
-    }),
-  ]);
+  await prisma.otpCode.create({
+    data: {
+      code: otp,
+      purpose: dto.purpose,
+      userId: user.id,
+      expiresAt: otpExpiresAt(10),
+    },
+  });
 
-  sendOtpEmail(user.email, user.fullName, otp, dto.purpose);
+  await sendOtpEmail(user.email, user.fullName, otp, dto.purpose);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -300,6 +302,7 @@ const _createSession = async (
 ): Promise<TokenPair> => {
   const tokenPair = issueTokenPair(userId, role, email);
 
+  // Refresh token lives for 30 days
   const refreshExpiry = new Date();
   refreshExpiry.setDate(refreshExpiry.getDate() + 30);
 

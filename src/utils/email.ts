@@ -1,3 +1,4 @@
+// src/utils/email.ts
 import nodemailer from "nodemailer";
 import { config } from "../config";
 import { logger } from "../config/logger";
@@ -7,9 +8,6 @@ const transporter = nodemailer.createTransport({
   port: config.email.port,
   secure: config.email.port === 465,
   auth: { user: config.email.user, pass: config.email.pass },
-  connectionTimeout: 5_000,
-  greetingTimeout: 3_000,
-  socketTimeout: 10_000,
 });
 
 interface SendMailOptions {
@@ -18,29 +16,12 @@ interface SendMailOptions {
   html: string;
 }
 
-const sendMail = async (opts: SendMailOptions): Promise<void> => {
+export const sendMail = async (opts: SendMailOptions): Promise<void> => {
   if (config.isDev && !config.email.user) {
-    logger.info(
-      `[DEV] Email skipped — to: ${opts.to} | subject: ${opts.subject}`,
-    );
+    logger.info(`[DEV] Email to ${opts.to}: ${opts.subject}`);
     return;
   }
-
-  try {
-    await transporter.sendMail({ from: config.email.from, ...opts });
-  } catch (err) {
-    logger.error(
-      `[email] Failed to send "${opts.subject}" to ${opts.to}:`,
-      err,
-    );
-    throw err;
-  }
-};
-
-const sendMailBackground = (opts: SendMailOptions, context: string): void => {
-  sendMail(opts).catch((err) =>
-    logger.error(`[email:background] ${context} failed:`, err),
-  );
+  await transporter.sendMail({ from: config.email.from, ...opts });
 };
 
 // ─── Email templates ──────────────────────────────────────────────────────────
@@ -50,7 +31,7 @@ export const sendOtpEmail = (
   name: string,
   otp: string,
   purpose: string,
-): void => {
+): Promise<void> => {
   const configs: Record<
     string,
     { subject: string; action: string; context?: string }
@@ -81,41 +62,34 @@ export const sendOtpEmail = (
     action: "complete your request",
   };
 
-  sendMailBackground(
-    {
-      to,
-      subject,
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:auto">
-          <h2>Hello, ${name}!</h2>
-          <p>Use the code below to ${action}. It expires in <strong>10 minutes</strong>.</p>
-          ${context ? `<p style="color:#555;font-size:14px">${context}</p>` : ""}
-          <div style="font-size:36px;font-weight:bold;letter-spacing:8px;text-align:center;
-                      padding:20px;background:#f4f4f4;border-radius:8px;margin:20px 0">
-            ${otp}
-          </div>
-          <p style="color:#888;font-size:12px">
-            If you didn't request this, please ignore this email.
-          </p>
+  return sendMail({
+    to,
+    subject,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:auto">
+        <h2>Hello, ${name}!</h2>
+        <p>Use the code below to ${action}. It expires in <strong>10 minutes</strong>.</p>
+        ${context ? `<p style="color:#555;font-size:14px">${context}</p>` : ""}
+        <div style="font-size:36px;font-weight:bold;letter-spacing:8px;text-align:center;
+                    padding:20px;background:#f4f4f4;border-radius:8px;margin:20px 0">
+          ${otp}
         </div>
-      `,
-    },
-    `OTP email [${purpose}] to ${to}`,
-  );
+        <p style="color:#888;font-size:12px">
+          If you didn't request this, please ignore this email.
+        </p>
+      </div>
+    `,
+  });
 };
 
-export const sendWelcomeEmail = (to: string, name: string): void => {
-  sendMailBackground(
-    {
-      to,
-      subject: "Welcome to Rave! 🎉",
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:auto">
-          <h2>Welcome to Rave, ${name}!</h2>
-          <p>Your account has been verified. Start exploring trusted food vendors near you.</p>
-        </div>
-      `,
-    },
-    `Welcome email to ${to}`,
-  );
-};
+export const sendWelcomeEmail = (to: string, name: string): Promise<void> =>
+  sendMail({
+    to,
+    subject: "Welcome to Rave! 🎉",
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:auto">
+        <h2>Welcome to Rave, ${name}!</h2>
+        <p>Your account has been verified. Start exploring trusted food vendors near you.</p>
+      </div>
+    `,
+  });
