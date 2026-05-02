@@ -7,12 +7,11 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc && tsc-alias",
     "start": "node dist/server.js",
-    "setup": "prisma generate && prisma migrate dev && tsx prisma/seed.ts",
+    "setup": "prisma generate && prisma migrate dev",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "db:reset": "prisma migrate reset --force && tsx prisma/seed.ts",
+    "db:reset": "prisma migrate reset --force",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -82,7 +81,5 @@
       "src/middleware/**/*.ts"
     ]
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  }
+  "prisma": {}
 }

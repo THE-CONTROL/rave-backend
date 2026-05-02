@@ -139,7 +139,7 @@ export const handleWebhook = async (event: string, data: any) => {
 };
 
 export const getNigerianBanks = async () => {
-  const { data } = await ps.get("/bank?country=nigeria&perPage=100");
+  const { data } = await ps.get("/bank?country=nigeria");
   return data.data.map((b: any) => ({
     name: b.name,
     code: b.code,

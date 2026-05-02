@@ -32,7 +32,6 @@ src/
 └── validators/      # Zod schemas for every request body
 prisma/
 ├── schema.prisma    # Full data model (18 models)
-└── seed.ts          # Sample data for dev
 ```
 
 ---

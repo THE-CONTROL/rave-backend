@@ -21,6 +21,6 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "prisma"],
   "prisma": {
-    "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts"
+    "seed": "ts-node -r tsconfig-paths/register"
   }
 }

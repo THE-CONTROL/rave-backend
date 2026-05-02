@@ -43,7 +43,10 @@ app.use(
     max: 200,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, message: "Too many requests. Please try again later." },
+    message: {
+      success: false,
+      message: "Too many requests. Please try again later.",
+    },
   }),
 );
 
@@ -51,7 +54,10 @@ app.use(
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  message: { success: false, message: "Too many auth attempts. Please try again later." },
+  message: {
+    success: false,
+    message: "Too many auth attempts. Please try again later.",
+  },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,14 +77,6 @@ app.use(
     stream: { write: (msg) => logger.info(msg.trim()) },
   }),
 );
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Static uploads
-// ─────────────────────────────────────────────────────────────────────────────
-
-const uploadDir = path.resolve(config.upload.dir);
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-app.use("/uploads", express.static(uploadDir));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes
