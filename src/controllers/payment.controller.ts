@@ -26,20 +26,34 @@ export const resolveAccount = asyncHandler(async (req, res) => {
  * Paystack GET Callback
  * This handles the browser redirect after a user completes payment.
  */
-export const handleCallback = asyncHandler(
-  async (req: Request, res: Response) => {
-    const { reference } = req.query as { reference: string };
+export const handleCallback = async (req: Request, res: Response) => {
+  const { reference } = req.query;
 
-    // We don't perform logic here (wallet updates happen in the webhook)
-    // We simply redirect the user back to the mobile app
-    // Customize the deep link scheme to match your app setup
-    const appRedirectUrl = `rave://payment-verify?reference=${reference}`;
+  if (!reference) {
+    return res.redirect(`rave://checkout-result?status=failed`);
+  }
 
-    return res.redirect(appRedirectUrl);
-  },
-);
+  try {
+    const result = await paymentService.verifyAndCompleteTransaction(
+      reference as string,
+    );
 
-// Paystack calls this — no auth middleware, signature verified here
+    if (result.status === "success" || result.status === "already_processed") {
+      return res.redirect(
+        `rave://checkout-result?status=success&reference=${reference}`,
+      );
+    }
+
+    return res.redirect(
+      `rave://checkout-result?status=failed&reference=${reference}`,
+    );
+  } catch {
+    return res.redirect(
+      `rave://checkout-result?status=failed&reference=${reference}`,
+    );
+  }
+};
+
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
   const secret = process.env.PAYSTACK_SECRET_KEY ?? "";
   const hash = crypto
@@ -52,6 +66,10 @@ export const webhook = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Acknowledge first — Paystack won't retry if it gets 200 immediately
+  res.sendStatus(200);
+
+  // Process after — if this fails, your idempotency check (FIN_ prefix)
+  // protects against double-processing on any retry anyway
   await paymentService.handleWebhook(req.body.event, req.body.data);
-  res.sendStatus(200); // Paystack requires a 200 response
 });

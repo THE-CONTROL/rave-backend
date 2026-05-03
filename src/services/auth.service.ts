@@ -35,6 +35,7 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     );
   }
 
+  // Hash password and create user first (profile stubs depend on user.id)
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
   const user = await prisma.user.create({
@@ -49,24 +50,19 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     },
   });
 
-  // Create role-specific profile stubs
-  if (dto.role === "vendor") {
-    await prisma.vendorProfile.create({
-      data: {
-        userId: user.id,
-        storeName: dto.name + "'s Store",
-      },
-    });
-  }
-
-  if (dto.role === "rider") {
-    await prisma.riderProfile.create({
-      data: { userId: user.id },
-    });
-  }
-
   const otp = generateOtp();
-  await prisma.otpCode.create({
+
+  // Role-profile stub + OTP record can be created concurrently
+  const profileCreate =
+    dto.role === "vendor"
+      ? prisma.vendorProfile.create({
+          data: { userId: user.id, storeName: dto.name + "'s Store" },
+        })
+      : dto.role === "rider"
+        ? prisma.riderProfile.create({ data: { userId: user.id } })
+        : Promise.resolve();
+
+  const otpCreate = prisma.otpCode.create({
     data: {
       code: otp,
       purpose: "verify-account",
@@ -75,6 +71,8 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     },
   });
 
+  // Fire DB writes concurrently, then send email once both settle
+  await Promise.all([profileCreate, otpCreate]);
   await sendOtpEmail(user.email, user.fullName, otp, "verify-account");
 };
 
@@ -85,13 +83,12 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 export const verifyEmail = async (
   dto: VerifyEmailDto,
 ): Promise<{ purpose: string; tokens?: TokenPair; role: Role }> => {
-  // Find the most recent unused OTP for this purpose AND user email
   const otpRecord = await prisma.otpCode.findFirst({
     where: {
       code: dto.code,
       purpose: dto.purpose,
       used: false,
-      user: { email: dto.email }, // Ensure code belongs to the requesting email
+      user: { email: dto.email },
     },
     include: { user: true },
     orderBy: { createdAt: "desc" },
@@ -101,33 +98,38 @@ export const verifyEmail = async (
     throw AppError.badRequest("Invalid or expired OTP code.");
   }
 
-  // Mark OTP as used
-  await prisma.otpCode.update({
+  // Mark OTP used + verify user email concurrently — neither depends on the other
+  const markUsed = prisma.otpCode.update({
     where: { id: otpRecord.id },
     data: { used: true },
   });
 
   if (dto.purpose === "verify-account") {
-    await prisma.user.update({
+    const markVerified = prisma.user.update({
       where: { id: otpRecord.userId },
       data: { isEmailVerified: true },
     });
 
-    const tokens = await _createSession(
-      otpRecord.user.id,
-      otpRecord.user.role,
-      otpRecord.user.email,
-    );
+    // All three run concurrently: mark OTP, verify user, create session
+    const [, , tokens] = await Promise.all([
+      markUsed,
+      markVerified,
+      _createSession(
+        otpRecord.user.id,
+        otpRecord.user.role,
+        otpRecord.user.email,
+      ),
+    ]);
 
-    await sendWelcomeEmail(
-      "lawsonekhorutomwen@gmail.com",
-      otpRecord.user.fullName,
+    // Welcome email is fire-and-forget — no reason to make the client wait
+    sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName).catch(
+      (err) => console.error("[verifyEmail] Welcome email failed:", err),
     );
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
 
-  // For reset-password, we return the role so frontend can manage the UI state
+  await markUsed;
   return { purpose: "reset-password", role: otpRecord.user.role };
 };
 
