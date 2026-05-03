@@ -144,6 +144,22 @@ export const seedAds = async (): Promise<void> => {
       isActive: true,
     },
   });
+
+  await prisma.advertisement.upsert({
+    where: { id: "ad-rider-001" },
+    update: {},
+    create: {
+      id: "ad-rider-001",
+      type: "image",
+      contentUri:
+        "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600",
+      headline: "Boost Your Sales",
+      bodyText: "Upgrade to Pro and get featured on the home page.",
+      ctaText: "Upgrade Now",
+      targetRole: "rider",
+      isActive: true,
+    },
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
