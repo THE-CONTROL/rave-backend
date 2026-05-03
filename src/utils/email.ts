@@ -1,14 +1,9 @@
 // src/utils/email.ts
-import nodemailer from "nodemailer";
 import { config } from "../config";
 import { logger } from "../config/logger";
 
-const transporter = nodemailer.createTransport({
-  host: config.email.host,
-  port: config.email.port,
-  secure: config.email.port === 465,
-  auth: { user: config.email.user, pass: config.email.pass },
-});
+const RESEND_BASE_URL = "https://api.resend.com";
+const DEFAULT_FROM = "Rave <no-reply@yourdomain.com>";
 
 interface SendMailOptions {
   to: string;
@@ -16,15 +11,36 @@ interface SendMailOptions {
   html: string;
 }
 
+const sendResend = async (opts: SendMailOptions): Promise<void> => {
+  const response = await fetch(`${RESEND_BASE_URL}/emails`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.email.resendApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: DEFAULT_FROM,
+      to: opts.to,
+      subject: opts.subject,
+      html: opts.html,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = (await response.json()) as { message?: string };
+    throw new Error(
+      `Resend error ${response.status}: ${error.message ?? "Unknown error"}`,
+    );
+  }
+};
+
 export const sendMail = async (opts: SendMailOptions): Promise<void> => {
-  if (config.isDev && !config.email.user) {
+  if (config.isDev && !config.email.resendApiKey) {
     logger.info(`[DEV] Email to ${opts.to}: ${opts.subject}`);
     return;
   }
-  await transporter.sendMail({ from: config.email.from, ...opts });
+  await sendResend(opts);
 };
-
-// ─── Email templates ──────────────────────────────────────────────────────────
 
 export const sendOtpEmail = (
   to: string,
@@ -32,7 +48,7 @@ export const sendOtpEmail = (
   otp: string,
   purpose: string,
 ): Promise<void> => {
-  const configs: Record<
+  const purposeConfigs: Record<
     string,
     { subject: string; action: string; context?: string }
   > = {
@@ -57,19 +73,23 @@ export const sendOtpEmail = (
     },
   };
 
-  const { subject, action, context } = configs[purpose] ?? {
+  const matched = purposeConfigs[purpose] ?? {
     subject: "Your Rave OTP",
     action: "complete your request",
   };
 
+  const contextHtml = matched.context
+    ? `<p style="color:#555;font-size:14px">${matched.context}</p>`
+    : "";
+
   return sendMail({
     to,
-    subject,
+    subject: matched.subject,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:auto">
         <h2>Hello, ${name}!</h2>
-        <p>Use the code below to ${action}. It expires in <strong>10 minutes</strong>.</p>
-        ${context ? `<p style="color:#555;font-size:14px">${context}</p>` : ""}
+        <p>Use the code below to ${matched.action}. It expires in <strong>10 minutes</strong>.</p>
+        ${contextHtml}
         <div style="font-size:36px;font-weight:bold;letter-spacing:8px;text-align:center;
                     padding:20px;background:#f4f4f4;border-radius:8px;margin:20px 0">
           ${otp}

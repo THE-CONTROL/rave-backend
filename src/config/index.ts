@@ -31,12 +31,9 @@ export const config = {
     refreshExpiresIn: optional("JWT_REFRESH_EXPIRES_IN", "30d"),
   },
 
+  // src/config/index.ts  — update the email section
   email: {
-    host: optional("SMTP_HOST", "smtp.gmail.com"),
-    port: parseInt(optional("SMTP_PORT", "587"), 10),
-    user: optional("SMTP_USER", ""),
-    pass: optional("SMTP_PASS", ""),
-    from: optional("EMAIL_FROM", "Rave App <noreply@rave.com>"),
+    resendApiKey: process.env.RESEND_API_KEY ?? "",
   },
 
   upload: {
