@@ -3,7 +3,7 @@ import { config } from "../config";
 import { logger } from "../config/logger";
 
 const RESEND_BASE_URL = "https://api.resend.com";
-const DEFAULT_FROM = "Rave <no-reply@email.sendpiper.co>";
+const DEFAULT_FROM = "Sendpiper Alerts<no-reply@email.sendpiper.co>";
 
 interface SendMailOptions {
   to: string;
