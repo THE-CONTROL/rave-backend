@@ -21,7 +21,6 @@ const SALT_ROUNDS = 12;
 // ─────────────────────────────────────────────────────────────────────────────
 // Sign Up
 // ─────────────────────────────────────────────────────────────────────────────
-
 export const signUp = async (dto: SignUpDto): Promise<void> => {
   const existing = await prisma.user.findFirst({
     where: { OR: [{ email: dto.email }, { phone: dto.phoneNumber }] },
@@ -35,7 +34,6 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     );
   }
 
-  // Hash password and create user first (profile stubs depend on user.id)
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
   const user = await prisma.user.create({
@@ -52,7 +50,6 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
   const otp = generateOtp();
 
-  // Role-profile stub + OTP record can be created concurrently
   const profileCreate =
     dto.role === "vendor"
       ? prisma.vendorProfile.create({
@@ -71,9 +68,12 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     },
   });
 
-  // Fire DB writes concurrently, then send email once both settle
   await Promise.all([profileCreate, otpCreate]);
-  await sendOtpEmail(user.email, user.fullName, otp, "verify-account");
+
+  // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
+  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch((err) =>
+    console.error("[signUp] OTP email failed:", err),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,10 +190,9 @@ export const refreshTokens = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // Forgot Password
 // ─────────────────────────────────────────────────────────────────────────────
-
 export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
-  if (!user) return; // Silent return for security
+  if (!user) return;
 
   const otp = generateOtp();
   await prisma.otpCode.create({
@@ -205,7 +204,10 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
     },
   });
 
-  await sendOtpEmail(user.email, user.fullName, otp, "reset-password");
+  // Fix: fire-and-forget — OTP is saved, don't crash if email provider is down
+  sendOtpEmail(user.email, user.fullName, otp, "reset-password").catch((err) =>
+    console.error("[forgotPassword] OTP email failed:", err),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,12 +241,10 @@ export const resetPassword = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // Resend OTP
 // ─────────────────────────────────────────────────────────────────────────────
-
 export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
-  // Invalidate old unused codes for this user
   await prisma.otpCode.updateMany({
     where: { userId: user.id, used: false },
     data: { used: true },
@@ -261,7 +261,10 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
     },
   });
 
-  await sendOtpEmail(user.email, user.fullName, otp, dto.purpose);
+  // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
+  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) =>
+    console.error("[resendCode] OTP email failed:", err),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
