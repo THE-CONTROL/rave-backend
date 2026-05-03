@@ -48,7 +48,7 @@ export const resetPasswordSchema = z
         "Password must contain at least one special character",
       ),
     confirmPassword: z.string(),
-    userId: z.string().uuid().optional(), // Used in forgot-password flow
+    email: z.string().email().optional(), // Used in forgot-password flow
   })
   .refine((d) => d.password === d.confirmPassword, {
     message: "Passwords do not match",

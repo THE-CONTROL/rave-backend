@@ -5,6 +5,7 @@ import { getSlides } from "../services/onboarding.service";
 import { Role } from "@prisma/client";
 import { AuthenticatedRequest } from "../types";
 import { ok, created, asyncHandler } from "../utils";
+import { prisma } from "@/config/database";
 
 export const signUp = asyncHandler(async (req: Request, res: Response) => {
   await authService.signUp(req.body);
@@ -47,17 +48,24 @@ export const forgotPassword = asyncHandler(
 
 export const resetPassword = asyncHandler(
   async (req: Request, res: Response) => {
-    // Fix: Prioritize user ID from the request body for the forgot-password flow
-    // while allowing authenticated users to change password via their session.
-    const userId = req.body.userId ?? (req as AuthenticatedRequest).user?.id;
+    let userId: string | undefined;
+
+    if (req.body.email) {
+      const user = await prisma.user.findUnique({
+        where: { email: req.body.email },
+        select: { id: true },
+      });
+      userId = user?.id;
+    } else {
+      userId = (req as AuthenticatedRequest).user?.id;
+    }
 
     if (!userId) {
-      // Don't 'return' the result of res.status
       res.status(400).json({
         success: false,
         message: "User context is required to reset password.",
       });
-      return; // Return nothing (void)
+      return;
     }
 
     await authService.resetPassword(userId, req.body);
