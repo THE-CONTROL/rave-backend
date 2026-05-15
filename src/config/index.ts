@@ -36,11 +36,6 @@ export const config = {
     resendApiKey: process.env.RESEND_API_KEY ?? "",
   },
 
-  upload: {
-    dir: optional("UPLOAD_DIR", "uploads"),
-    maxSizeMb: parseInt(optional("MAX_FILE_SIZE_MB", "10"), 10),
-  },
-
   cors: {
     allowedOrigins: optional("ALLOWED_ORIGINS", "http://localhost:3000")
       .split(",")

@@ -755,8 +755,6 @@ export const getVendorTransactionById = async (
 // Vendor Onboarding — per-step save + resume
 // ─────────────────────────────────────────────────────────────────────────────
 
-// src/services/vendor.service.ts
-
 export const getVendorOnboardingState = async (userId: string) => {
   const vendor = await prisma.vendorProfile.findUnique({
     where: { userId },
@@ -771,20 +769,33 @@ export const getVendorOnboardingState = async (userId: string) => {
 
   const bank = vendor.bankAccounts[0];
 
+  // 1. Store Information (Required: Store Name, Address, Bio/Description)
   const step1Done = !!(
     vendor.storeName &&
     vendor.address &&
+    vendor.description && // Bio is required
     vendor.lat &&
     vendor.lng
   );
-  const step2Done = !!(vendor.logoUrl && vendor.bannerUrl && vendor.schedules);
+
+  // 2. Branding & Availability (Required: Logo, Opening Time. Optional: Banner)
+  const step2Done = !!(
+    vendor.logoUrl &&
+    vendor.schedules &&
+    vendor.schedules.length > 0 // Opening time is required
+  );
+
+  // 3. Verification Documents (Required)
   const step3Done = !!(
     vendor.documentUrl &&
     vendor.documentType &&
     vendor.cacUrl
-  ); // Matches Store Details2.png
+  );
+
+  // 4. Bank Details (Required)
   const step4Done = !!bank;
 
+  // Determine where the user should resume
   let resumeStep = 1;
   if (!step1Done) resumeStep = 1;
   else if (!step2Done) resumeStep = 2;
@@ -806,7 +817,7 @@ export const getVendorOnboardingState = async (userId: string) => {
     lng: vendor.lng || null,
     description: vendor.description,
     logoUrl: vendor.logoUrl,
-    bannerUrl: vendor.bannerUrl,
+    bannerUrl: vendor.bannerUrl, // Can be null, frontend should render plain green banner if missing
     documentType: (vendor as any).documentType,
     documentUrl: (vendor as any).documentUrl,
     cacUrl: (vendor as any).cacUrl,
@@ -842,14 +853,12 @@ export const saveVendorOnboardingStep = async (
     });
 
     if (address && lat && lng) {
-      // Update the VendorProfile coordinates and address string directly
-      // Address model is no longer used.
       await prisma.vendorProfile.update({
         where: { userId },
         data: {
-          address: address, // vendor.address
-          lat: lat, // vendor.lat
-          lng: lng, // vendor.lng
+          address: address,
+          lat: lat,
+          lng: lng,
         },
       });
     }
@@ -859,9 +868,13 @@ export const saveVendorOnboardingStep = async (
 
     await prisma.$transaction(async (tx) => {
       // 1. Update Profile Images
+      // Safely update bannerUrl if provided; undefined won't overwrite existing
       await tx.vendorProfile.update({
         where: { id: vendor.id },
-        data: { logoUrl, bannerUrl },
+        data: {
+          logoUrl,
+          ...(bannerUrl !== undefined && { bannerUrl }),
+        },
       });
 
       // 2. Update Schedules (Delete existing and recreate)
@@ -891,7 +904,6 @@ export const saveVendorOnboardingStep = async (
     });
   } else if (step === 4) {
     const { bank, name, accountNumber, bankCode } = data;
-    // This will now work because frontend sends 'bank' instead of 'bankName'
     await prisma.bankAccount.upsert({
       where: { vendorId_accountNumber: { vendorId: vendor.id, accountNumber } },
       create: {
@@ -902,7 +914,12 @@ export const saveVendorOnboardingStep = async (
         bankCode,
         isPrimary: true,
       },
-      update: { bankName: bank, accountName: name, accountNumber: bankCode },
+      update: {
+        bankName: bank,
+        accountName: name,
+        accountNumber, // Fixed logic flaw here
+        bankCode,
+      },
     });
   }
 
@@ -916,8 +933,11 @@ export const submitVendorOnboarding = async (
   const { step1Done, step2Done, step3Done, step4Done } = state.stepsComplete;
 
   if (!step1Done || !step2Done || !step3Done || !step4Done)
-    throw AppError.badRequest("Please complete all steps before submitting.");
+    throw AppError.badRequest(
+      "Please complete all required steps before submitting.",
+    );
 
+  // Make sure _requireVendor is imported/defined in your file scope
   const vendor = await _requireVendor(userId);
   await prisma.vendorProfile.update({
     where: { id: vendor.id },

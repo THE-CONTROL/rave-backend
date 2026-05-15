@@ -3,7 +3,6 @@ dist/
 .env
 *.env
 logs/
-uploads/
 *.log
 .DS_Store
 prisma/migrations/

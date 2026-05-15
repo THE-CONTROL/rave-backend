@@ -1,7 +1,6 @@
 // src/routes/vendor.routes.ts
 import { Router } from "express";
 import * as ctrl from "../controllers/vendor.controller";
-import * as evidenceCtrl from "../controllers/evidence.controller";
 import * as paymentCtrl from "../controllers/payment.controller";
 import * as orderCtrl from "../controllers/order.controller";
 import { authenticate, authorize } from "../middleware/auth";
@@ -84,7 +83,7 @@ router.patch(
   orderCtrl.advanceStatus,
 );
 router.patch(
-  "/:id/evidence",
+  "/orders/:id/evidence",
   validate(v.uploadEvidenceSchema), // Validates that evidenceUrl is a valid URL
   orderCtrl.uploadOrderEvidence,
 );
@@ -135,9 +134,6 @@ router.patch("/notifications/read-all", ctrl.markAllNotificationsRead);
 router.delete("/notifications/:id", ctrl.deleteNotification);
 router.get("/notifications/settings", ctrl.getNotificationSettings);
 router.patch("/notifications/settings", ctrl.updateNotificationSettings);
-
-// ── Evidence upload ───────────────────────────────────────────────────────────
-router.post("/orders/:id/evidence", evidenceCtrl.uploadEvidence);
 
 router.patch("/push-token", ctrl.updatePushToken);
 
