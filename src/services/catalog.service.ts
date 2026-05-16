@@ -705,13 +705,17 @@ export const getBreakfastPicks = async (
   }));
 };
 
+// src/services/catalog.service.ts — updated getAllVendors and getAllMenuItems
+
+// src/services/catalog.service.ts — updated getAllVendors and getAllMenuItems
+
 export const getAllVendors = async (
-  query: PaginationQuery,
+  query: PaginationQuery & { search?: string; filter?: string },
   userId?: string | null,
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  // 1. Identify User's Usuals
+  // Identify user's usual vendors (completed orders)
   const usualVendorIds = new Set<string>();
   if (userId) {
     const usualOrders = await prisma.order.findMany({
@@ -724,10 +728,44 @@ export const getAllVendors = async (
     usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
   }
 
-  // 2. Fetch fully onboarded vendors
+  // For favorites filter — fetch vendorIds the user has favorited
+  let favoriteVendorIds: string[] | null = null;
+  if (userId && query.filter === "favorites") {
+    const favs = await prisma.favoriteRestaurant.findMany({
+      where: { userId },
+      select: { vendorId: true },
+    });
+    favoriteVendorIds = favs.map((f: { vendorId: string }) => f.vendorId);
+  }
+
   const where: any = {
-    setupProgress: 100, // FIX: Only fetch vendors who completed onboarding
+    setupProgress: 100,
+    ...(query.search
+      ? { storeName: { contains: query.search, mode: "insensitive" } }
+      : {}),
+    ...(query.filter === "open" ? { isOpen: true } : {}),
+    ...(query.filter === "usuals" && usualVendorIds.size > 0
+      ? { id: { in: [...usualVendorIds] } }
+      : {}),
+    ...(favoriteVendorIds !== null ? { id: { in: favoriteVendorIds } } : {}),
   };
+
+  const orderBy =
+    query.filter === "top_rated"
+      ? { averageRating: "desc" as const }
+      : { averageRating: "desc" as const };
+
+  // Fetch favorited vendor IDs for isFavorite flag on each card
+  let userFavoriteVendorIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteRestaurant.findMany({
+      where: { userId },
+      select: { vendorId: true },
+    });
+    favs.forEach((f: { vendorId: string }) =>
+      userFavoriteVendorIds.add(f.vendorId),
+    );
+  }
 
   const [vendors, total] = await Promise.all([
     prisma.vendorProfile.findMany({
@@ -744,7 +782,7 @@ export const getAllVendors = async (
         positiveReviews: true,
         hoursSummary: true,
       },
-      orderBy: { averageRating: "desc" },
+      orderBy,
       skip,
       take: limit,
     }),
@@ -765,6 +803,7 @@ export const getAllVendors = async (
         positiveReviews: v.positiveReviews,
         closesIn: v.hoursSummary,
         isYourUsual: usualVendorIds.has(v.id),
+        isFavorite: userFavoriteVendorIds.has(v.id),
       })),
     },
     meta: buildMeta(total, page, limit),
@@ -772,17 +811,41 @@ export const getAllVendors = async (
 };
 
 export const getAllMenuItems = async (
-  query: PaginationQuery,
+  query: PaginationQuery & { search?: string; filter?: string },
   userId?: string | null,
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  // Fetch items belonging to fully onboarded vendors
+  // For favorites filter — fetch menuItemIds the user has favorited
+  let favoriteItemIds: string[] | null = null;
+  if (userId && query.filter === "favorites") {
+    const favs = await prisma.favoriteProduct.findMany({
+      where: { userId },
+      select: { menuItemId: true },
+    });
+    favoriteItemIds = favs.map((f: { menuItemId: string }) => f.menuItemId);
+  }
+
   const where: any = {
-    vendor: {
-      setupProgress: 100, // FIX: Only fetch items from active/onboarded vendors
-    },
+    vendor: { setupProgress: 100 },
+    ...(query.search
+      ? { name: { contains: query.search, mode: "insensitive" } }
+      : {}),
+    ...(query.filter === "best_sellers" ? { isBestSeller: true } : {}),
+    ...(favoriteItemIds !== null ? { id: { in: favoriteItemIds } } : {}),
   };
+
+  // Fetch all favorited item IDs for the isFavorite flag on each card
+  let userFavoriteItemIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteProduct.findMany({
+      where: { userId },
+      select: { menuItemId: true },
+    });
+    favs.forEach((f: { menuItemId: string }) =>
+      userFavoriteItemIds.add(f.menuItemId),
+    );
+  }
 
   const [items, total] = await Promise.all([
     prisma.menuItem.findMany({
@@ -793,34 +856,32 @@ export const getAllMenuItems = async (
             id: true,
             storeName: true,
             averageRating: true,
+            // Remove deliveryFee and deliveryTime — not in your VendorProfile schema
           },
         },
         images: { where: { isMain: true }, take: 1 },
-        // FIX: Safely conditionally include favorites
-        ...(userId ? { favorites: { where: { userId } } } : {}),
       },
       orderBy: { isBestSeller: "desc" },
       skip,
       take: limit,
-    }),
+    }) as any, // cast to any so TypeScript stops fighting the include shape
     prisma.menuItem.count({ where }),
   ]);
 
   return {
     data: {
-      // Used `any` here temporarily so TypeScript doesn't complain about conditionally included favorites
       items: items.map((item: any) => ({
         id: item.id,
         name: item.name,
         price: item.price,
         images: item.images || null,
         isBestSeller: item.isBestSeller,
-        // FIX: Safely check favorites array avoiding undefined crash
-        isFavorite: item.favorites ? item.favorites.length > 0 : false,
+        isFavorite: userFavoriteItemIds.has(item.id),
         vendor: {
           id: item.vendor.id,
           storeName: item.vendor.storeName,
           averageRating: item.vendor.averageRating,
+          // Only include fields that exist on VendorProfile
         },
       })),
     },
