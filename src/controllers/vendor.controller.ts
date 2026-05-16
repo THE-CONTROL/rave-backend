@@ -214,7 +214,7 @@ export const deleteBankAccount = asyncHandler(async (req, res) => {
 
 export const getPromotions = asyncHandler(async (req, res) => {
   const result = await vendorService.getPromotions(uid(req), req.query as any);
-  ok(res, result.data, "Promotions retrieved.", result.meta);
+  ok(res, result); // send { data, meta } as one object
 });
 
 export const getPromotionById = asyncHandler(async (req, res) => {
