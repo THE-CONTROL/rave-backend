@@ -1400,7 +1400,7 @@ export const updateVendorNotificationSettings = (
 // Private helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-const _requireVendor = async (userId: string) => {
+export const _requireVendor = async (userId: string) => {
   const vendor = await prisma.vendorProfile.findUnique({ where: { userId } });
   if (!vendor) throw AppError.notFound("Vendor profile");
   return vendor;

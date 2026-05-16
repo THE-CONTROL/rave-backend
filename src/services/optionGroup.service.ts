@@ -3,14 +3,16 @@ import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { parsePagination, buildMeta } from "../utils";
 import { PaginationQuery } from "../types";
+import { _requireVendor } from "./vendor.service";
 
 export const getOptionGroups = async (
-  vendorId: string,
+  userId: string,
   query: PaginationQuery,
 ) => {
+  const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  const where = { vendorId };
+  const where = { vendorId: vendor.id };
 
   const [data, total] = await Promise.all([
     prisma.optionGroup.findMany({
@@ -34,9 +36,11 @@ export const getOptionGroups = async (
   };
 };
 
-export const getOptionGroupById = async (vendorId: string, id: string) => {
+export const getOptionGroupById = async (userId: string, id: string) => {
+  const vendor = await _requireVendor(userId);
+
   const group = await prisma.optionGroup.findFirst({
-    where: { id, vendorId },
+    where: { id, vendorId: vendor.id },
     include: {
       options: {
         include: { sizes: { orderBy: { sortOrder: "asc" } } },
@@ -48,12 +52,14 @@ export const getOptionGroupById = async (vendorId: string, id: string) => {
   return group;
 };
 
-export const createOptionGroup = async (vendorId: string, data: any) => {
+export const createOptionGroup = async (userId: string, data: any) => {
+  const vendor = await _requireVendor(userId);
   const { options, ...groupData } = data;
+
   return prisma.optionGroup.create({
     data: {
       ...groupData,
-      vendorId,
+      vendorId: vendor.id,
       options: options
         ? {
             create: options.map((opt: any, i: number) => ({
@@ -77,12 +83,14 @@ export const createOptionGroup = async (vendorId: string, data: any) => {
 };
 
 export const updateOptionGroup = async (
-  vendorId: string,
+  userId: string,
   id: string,
   data: any,
 ) => {
+  const vendor = await _requireVendor(userId);
+
   const existing = await prisma.optionGroup.findFirst({
-    where: { id, vendorId },
+    where: { id, vendorId: vendor.id },
   });
   if (!existing) throw AppError.notFound("Option group not found.");
 
@@ -117,11 +125,14 @@ export const updateOptionGroup = async (
   });
 };
 
-export const deleteOptionGroup = async (vendorId: string, id: string) => {
+export const deleteOptionGroup = async (userId: string, id: string) => {
+  const vendor = await _requireVendor(userId);
+
   const existing = await prisma.optionGroup.findFirst({
-    where: { id, vendorId },
+    where: { id, vendorId: vendor.id },
   });
   if (!existing) throw AppError.notFound("Option group not found.");
+
   await prisma.optionGroup.delete({ where: { id } });
   return { deleted: true };
 };
