@@ -254,15 +254,24 @@ export const upsertStoreSchedules = async (
   schedules: { day: string; openTime: string; closeTime: string }[],
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
-  await prisma.$transaction(
-    schedules.map((s) =>
-      prisma.storeSchedule.upsert({
-        where: { vendorId_day: { vendorId: vendor.id, day: s.day } },
-        create: { vendorId: vendor.id, ...s },
-        update: { openTime: s.openTime, closeTime: s.closeTime },
-      }),
-    ),
-  );
+
+  // Use a transaction to ensure we don't lose data if something fails
+  await prisma.$transaction([
+    // 1. Delete ALL existing schedules for this vendor
+    prisma.storeSchedule.deleteMany({
+      where: { vendorId: vendor.id },
+    }),
+
+    // 2. Create the new set of schedules
+    prisma.storeSchedule.createMany({
+      data: schedules.map((s) => ({
+        vendorId: vendor.id,
+        day: s.day,
+        openTime: s.openTime,
+        closeTime: s.closeTime,
+      })),
+    }),
+  ]);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
