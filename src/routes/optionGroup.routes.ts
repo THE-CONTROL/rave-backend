@@ -5,7 +5,7 @@ import { authenticate, authorize } from "../middleware/auth";
 
 const router = Router();
 
-router.use(authenticate, authorize("rider"));
+router.use(authenticate, authorize("vendor"));
 
 router.get("/", ctrl.getOptionGroups);
 router.get("/:id", ctrl.getOptionGroupById);
