@@ -908,24 +908,35 @@ export const saveVendorOnboardingStep = async (
       },
     });
   } else if (step === 4) {
-    const { bank, name, accountNumber, bankCode } = data;
-    await prisma.bankAccount.upsert({
-      where: { vendorId_accountNumber: { vendorId: vendor.id, accountNumber } },
-      create: {
-        vendorId: vendor.id,
-        bankName: bank,
-        accountName: name,
-        accountNumber,
-        bankCode,
-        isPrimary: true,
-      },
-      update: {
-        bankName: bank,
-        accountName: name,
-        accountNumber, // Fixed logic flaw here
-        bankCode,
-      },
-    });
+    const { bank, name, accountNo, bankCode } = data;
+    const requiredFields = [bank, name, accountNo, bankCode];
+    const isValid = requiredFields.every(
+      (field) => field && String(field).trim().length > 0,
+    );
+    if (isValid) {
+      await prisma.bankAccount.upsert({
+        where: {
+          vendorId_accountNumber: {
+            vendorId: vendor.id,
+            accountNumber: accountNo,
+          },
+        },
+        create: {
+          vendorId: vendor.id,
+          bankName: bank,
+          accountName: name,
+          accountNumber: accountNo,
+          bankCode,
+          isPrimary: true,
+        },
+        update: {
+          bankName: bank,
+          accountName: name,
+          accountNumber: accountNo, // Fixed logic flaw here
+          bankCode,
+        },
+      });
+    }
   }
 
   return getVendorOnboardingState(userId);
@@ -1029,8 +1040,8 @@ export const deleteVendorBankAccount = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getPromotions = async (
-  userId: string, 
-  query: PaginationQuery & { status?: string } = {}
+  userId: string,
+  query: PaginationQuery & { status?: string } = {},
 ) => {
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
@@ -1038,7 +1049,9 @@ export const getPromotions = async (
 
   const where = {
     vendorId: vendor.id,
-    ...(query.status === "active" ? { isActive: true, endDate: { gte: now } } : {}),
+    ...(query.status === "active"
+      ? { isActive: true, endDate: { gte: now } }
+      : {}),
     ...(query.status === "expired"
       ? { OR: [{ isActive: false }, { endDate: { lt: now } }] }
       : {}),
@@ -1255,8 +1268,8 @@ export const getBadgeById = async (userId: string, badgeId: string) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getVendorReferralStats = async (
-  userId: string, 
-  query: PaginationQuery = {}
+  userId: string,
+  query: PaginationQuery = {},
 ) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -1290,7 +1303,7 @@ export const getVendorReferralStats = async (
         status: "completed",
       },
       _sum: { amount: true },
-    })
+    }),
   ]);
 
   return {
