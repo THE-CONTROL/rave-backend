@@ -203,7 +203,8 @@ model VendorProfile {
   // Verification Documents (Matches Store Details2.png)
   documentType     String?     // e.g., 'NIN', 'Passport'
   documentUrl      String?     // URL to the uploaded personal ID
-  cacUrl           String?     // URL to the Store Verification (CAC) document
+  storeDoc         String?     // URL to the Store Verification (CAC) document
+  storeDocType     String?      // e.g., 'CAC'
   
   // Status & Progress
   setupProgress    Int         @default(0) // 0-100

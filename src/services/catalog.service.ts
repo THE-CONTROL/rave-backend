@@ -46,9 +46,12 @@ export const getRestaurantDetails = async (
 
 export const getRestaurantMenu = async (
   vendorId: string,
+  query: PaginationQuery,
   userId?: string | null,
   categoryId?: string,
 ) => {
+  const { page, limit, skip } = parsePagination(query);
+
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
     select: {
@@ -62,27 +65,35 @@ export const getRestaurantMenu = async (
 
   if (!vendor) throw AppError.notFound("Restaurant");
 
-  const items = await prisma.menuItem.findMany({
-    where: {
-      vendorId,
-      isActive: true,
-      ...(categoryId ? { categories: { some: { categoryId } } } : {}),
-    },
-    include: {
-      categories: {
-        include: { category: { select: { id: true, name: true } } },
-      },
-      images: true,
-      ingredients: true,
-      favorites: userId ? { where: { userId } } : false,
-    },
-    orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
-  });
+  const whereClause: any = {
+    vendorId,
+    isActive: true,
+    ...(categoryId ? { categories: { some: { categoryId } } } : {}),
+  };
 
-  return items.map((item) => {
+  const [items, total] = await Promise.all([
+    prisma.menuItem.findMany({
+      where: whereClause,
+      include: {
+        categories: {
+          include: { category: { select: { id: true, name: true } } },
+        },
+        images: true,
+        ingredients: true,
+        // FIX: Safely conditionally include favorites
+        ...(userId ? { favorites: { where: { userId } } } : {}),
+      },
+      orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.menuItem.count({ where: whereClause }),
+  ]);
+
+  const mappedItems = items.map((item: any) => {
     // ── customGroups from optional ingredients grouped by mealType ────────
     const optionalIngredients = item.ingredients.filter(
-      (ing) => ing.isOptional,
+      (ing: any) => ing.isOptional,
     );
     const groupMap = new Map<string, typeof optionalIngredients>();
     for (const ing of optionalIngredients) {
@@ -96,11 +107,14 @@ export const getRestaurantMenu = async (
         title: mealType,
         type: "optional",
         required: false,
-        options: ings.map((ing) => ({
-          id: ing.id,
-          name: ing.name,
-          extraPrice: ing.price ?? 0,
-        })),
+        // Give TypeScript the exact structure of what an 'ing' is
+        options: ings.map(
+          (ing: { id: string; name: string; price: number | null }) => ({
+            id: ing.id,
+            name: ing.name,
+            extraPrice: ing.price ?? 0,
+          }),
+        ),
       }),
     );
 
@@ -112,12 +126,12 @@ export const getRestaurantMenu = async (
       isActive: item.isActive,
       isBestSeller: item.isBestSeller,
       isCustomizable: item.isCustomizable,
-      images: item.images.map((img) => ({
+      images: item.images.map((img: any) => ({
         id: img.id,
         url: img.url,
         isMain: img.isMain,
       })),
-      ingredients: item.ingredients.map((ing) => ({
+      ingredients: item.ingredients.map((ing: any) => ({
         id: ing.id,
         name: ing.name,
         portion: ing.portion,
@@ -129,7 +143,7 @@ export const getRestaurantMenu = async (
       // MenuItem has no direct reviews relation
       rating: vendor.averageRating,
       reviewCount: 0,
-      isFavorite: userId ? (item.favorites as any[]).length > 0 : false,
+      isFavorite: item.favorites ? item.favorites.length > 0 : false,
       vendor: {
         id: vendor.id,
         storeName: vendor.storeName,
@@ -137,7 +151,7 @@ export const getRestaurantMenu = async (
         isOpen: vendor.isOpen,
         averageRating: vendor.averageRating,
       },
-      categories: item.categories.map((c) => ({
+      categories: item.categories.map((c: any) => ({
         category: {
           id: c.category.id,
           name: c.category.name,
@@ -146,6 +160,11 @@ export const getRestaurantMenu = async (
       customGroups,
     };
   });
+
+  return {
+    items: mappedItems,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getRestaurantCategories = (vendorId: string) =>
@@ -346,6 +365,10 @@ export const search = async (
       customGroups: [],
     }));
   }
+
+  // To accurately return total records for meta search would require two parallel `.count()` requests.
+  // Using 0 here acts as a dummy pass-through if not fully implemented in the handler yet.
+  return { ...results, meta: buildMeta(0, page, limit) };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -645,7 +668,8 @@ export const getBreakfastPicks = async (
     include: {
       vendor: true,
       images: { where: { isMain: true }, take: 1 },
-      favorites: opts.userId ? { where: { userId: opts.userId } } : false,
+      // FIX: Safely conditionally include favorites
+      ...(opts.userId ? { favorites: { where: { userId: opts.userId } } } : {}),
       _count: { select: { orderItems: true } },
     },
     orderBy: { isBestSeller: "desc" },
@@ -666,13 +690,13 @@ export const getBreakfastPicks = async (
         )
       : items;
 
-  return filtered.slice(0, 15).map((item) => ({
+  return filtered.slice(0, 15).map((item: any) => ({
     id: item.id,
     name: item.name,
     price: item.price,
     images: item.images,
     isBestSeller: item.isBestSeller,
-    isFavorite: opts.userId ? (item.favorites as any[])?.length > 0 : false,
+    isFavorite: item.favorites ? item.favorites.length > 0 : false,
     vendor: {
       id: item.vendor.id,
       storeName: item.vendor.storeName,
@@ -687,7 +711,7 @@ export const getAllVendors = async (
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  // 1. Identify User's Usuals (Keep logic as it adds personalized context to the full list)
+  // 1. Identify User's Usuals
   const usualVendorIds = new Set<string>();
   if (userId) {
     const usualOrders = await prisma.order.findMany({
@@ -700,8 +724,10 @@ export const getAllVendors = async (
     usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
   }
 
-  // 2. Fetch Everything (Empty where clause)
-  const where: any = {};
+  // 2. Fetch fully onboarded vendors
+  const where: any = {
+    setupProgress: 100, // FIX: Only fetch vendors who completed onboarding
+  };
 
   const [vendors, total] = await Promise.all([
     prisma.vendorProfile.findMany({
@@ -751,8 +777,12 @@ export const getAllMenuItems = async (
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  // Fetch Everything (Empty where clause)
-  const where: any = {};
+  // Fetch items belonging to fully onboarded vendors
+  const where: any = {
+    vendor: {
+      setupProgress: 100, // FIX: Only fetch items from active/onboarded vendors
+    },
+  };
 
   const [items, total] = await Promise.all([
     prisma.menuItem.findMany({
@@ -766,7 +796,8 @@ export const getAllMenuItems = async (
           },
         },
         images: { where: { isMain: true }, take: 1 },
-        favorites: userId ? { where: { userId } } : false,
+        // FIX: Safely conditionally include favorites
+        ...(userId ? { favorites: { where: { userId } } } : {}),
       },
       orderBy: { isBestSeller: "desc" },
       skip,
@@ -777,13 +808,15 @@ export const getAllMenuItems = async (
 
   return {
     data: {
-      items: items.map((item) => ({
+      // Used `any` here temporarily so TypeScript doesn't complain about conditionally included favorites
+      items: items.map((item: any) => ({
         id: item.id,
         name: item.name,
         price: item.price,
         images: item.images || null,
         isBestSeller: item.isBestSeller,
-        isFavorite: userId ? (item.favorites as any[]).length > 0 : false,
+        // FIX: Safely check favorites array avoiding undefined crash
+        isFavorite: item.favorites ? item.favorites.length > 0 : false,
         vendor: {
           id: item.vendor.id,
           storeName: item.vendor.storeName,

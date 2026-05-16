@@ -773,10 +773,11 @@ export const getVendorOnboardingState = async (userId: string) => {
   const step1Done = !!(
     vendor.storeName &&
     vendor.address &&
-    vendor.description && // Bio is required
-    vendor.lat &&
-    vendor.lng
+    vendor.description
   );
+
+  // 1. Store Location (Required: Location)
+  const step1$5Done = !!(vendor.lat && vendor.lng);
 
   // 2. Branding & Availability (Required: Logo, Opening Time. Optional: Banner)
   const step2Done = !!(
@@ -789,7 +790,8 @@ export const getVendorOnboardingState = async (userId: string) => {
   const step3Done = !!(
     vendor.documentUrl &&
     vendor.documentType &&
-    vendor.cacUrl
+    vendor.storeDoc &&
+    vendor.storeDocType
   );
 
   // 4. Bank Details (Required)
@@ -798,6 +800,7 @@ export const getVendorOnboardingState = async (userId: string) => {
   // Determine where the user should resume
   let resumeStep = 1;
   if (!step1Done) resumeStep = 1;
+  else if (!step1$5Done) resumeStep = 1.5;
   else if (!step2Done) resumeStep = 2;
   else if (!step3Done) resumeStep = 3;
   else if (!step4Done) resumeStep = 4;
@@ -820,7 +823,8 @@ export const getVendorOnboardingState = async (userId: string) => {
     bannerUrl: vendor.bannerUrl, // Can be null, frontend should render plain green banner if missing
     documentType: (vendor as any).documentType,
     documentUrl: (vendor as any).documentUrl,
-    cacUrl: (vendor as any).cacUrl,
+    storeDocType: (vendor as any).storeDocType,
+    storeDoc: (vendor as any).storeDoc,
     schedules: vendor.schedules.map((s) => ({
       day: s.day,
       openTime: s.openTime,
@@ -899,7 +903,8 @@ export const saveVendorOnboardingStep = async (
       data: {
         documentType: data.idType,
         documentUrl: data.docUrl,
-        cacUrl: data.cacUrl,
+        storeDocType: data.storeDocType,
+        storeDoc: data.storeDoc,
       },
     });
   } else if (step === 4) {
@@ -1023,22 +1028,36 @@ export const deleteVendorBankAccount = async (
 // Promotions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getPromotions = async (userId: string, status?: string) => {
+export const getPromotions = async (
+  userId: string, 
+  query: PaginationQuery & { status?: string } = {}
+) => {
   const vendor = await _requireVendor(userId);
+  const { page, limit, skip } = parsePagination(query);
   const now = new Date();
 
   const where = {
     vendorId: vendor.id,
-    ...(status === "active" ? { isActive: true, endDate: { gte: now } } : {}),
-    ...(status === "expired"
+    ...(query.status === "active" ? { isActive: true, endDate: { gte: now } } : {}),
+    ...(query.status === "expired"
       ? { OR: [{ isActive: false }, { endDate: { lt: now } }] }
       : {}),
   };
 
-  return prisma.promotion.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-  });
+  const [data, total] = await Promise.all([
+    prisma.promotion.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.promotion.count({ where }),
+  ]);
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getPromotionById = async (userId: string, promoId: string) => {
@@ -1235,7 +1254,10 @@ export const getBadgeById = async (userId: string, badgeId: string) => {
 // Referrals
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getVendorReferralStats = async (userId: string) => {
+export const getVendorReferralStats = async (
+  userId: string, 
+  query: PaginationQuery = {}
+) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { referralCode: true },
@@ -1243,34 +1265,40 @@ export const getVendorReferralStats = async (userId: string) => {
 
   if (!user) throw AppError.notFound("User");
 
-  const referrals = await prisma.referral.findMany({
-    where: { referrerId: userId },
-    include: {
-      referee: {
-        select: {
-          fullName: true,
-          imageUrl: true,
+  const { page, limit, skip } = parsePagination(query);
+
+  const [referrals, totalReferrals, earned] = await Promise.all([
+    prisma.referral.findMany({
+      where: { referrerId: userId },
+      include: {
+        referee: {
+          select: {
+            fullName: true,
+            imageUrl: true,
+          },
         },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  const earned = await prisma.transaction.aggregate({
-    where: {
-      userId,
-      type: "referral",
-      status: "completed",
-    },
-    _sum: { amount: true },
-  });
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.referral.count({ where: { referrerId: userId } }),
+    prisma.transaction.aggregate({
+      where: {
+        userId,
+        type: "referral",
+        status: "completed",
+      },
+      _sum: { amount: true },
+    })
+  ]);
 
   return {
     referralCode: user.referralCode,
-    totalReferrals: referrals.length,
+    totalReferrals,
     amountEarned: earned._sum?.amount ?? 0,
     // Map the data to match the VendorReferralStats interface exactly
-    recentReferrals: referrals.slice(0, 10).map((ref) => ({
+    recentReferrals: referrals.map((ref) => ({
       id: ref.id,
       status: ref.status, // Ensure your DB uses 'PENDING' | 'COMPLETED'
       createdAt: format(new Date(ref.createdAt), "dd MMM yyyy"), // e.g., "12 Jun 2025"
@@ -1279,6 +1307,7 @@ export const getVendorReferralStats = async (userId: string) => {
         imageUrl: ref.referee.imageUrl,
       },
     })),
+    meta: buildMeta(totalReferrals, page, limit),
   };
 };
 

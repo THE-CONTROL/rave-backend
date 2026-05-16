@@ -93,53 +93,89 @@ export const submitFeedback = async (
 /**
  * Returns recent order/transaction references for the issue report dropdown.
  * Scoped by role — users see their orders, vendors see their store orders,
- * riders see their deliveries.
+ * riders see their deliveries. Now fully paginated.
  */
-export const getRecentRefs = async (userId: string, role: Role) => {
+export const getRecentRefs = async (
+  userId: string,
+  role: Role,
+  query: PaginationQuery = {},
+) => {
+  // Keeping the default limit to 20 for dropdown friendliness, but making it flexible
+  const { page, limit, skip } = parsePagination({ limit: 20, ...query });
+
   if (role === "user") {
-    const orders = await prisma.order.findMany({
-      where: { userId },
-      select: { id: true, orderId: true, createdAt: true, totalAmount: true },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-    return orders.map((o) => ({
-      id: o.orderId,
-      label: `Order ${o.orderId} — ₦${o.totalAmount.toLocaleString()}`,
-    }));
+    const where = { userId };
+    const [orders, total] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        select: { id: true, orderId: true, createdAt: true, totalAmount: true },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
+
+    return {
+      data: orders.map((o) => ({
+        id: o.orderId,
+        label: `Order ${o.orderId} — ₦${o.totalAmount.toLocaleString()}`,
+      })),
+      meta: buildMeta(total, page, limit),
+    };
   }
 
   if (role === "vendor") {
     const vendor = await prisma.vendorProfile.findUnique({ where: { userId } });
-    if (!vendor) return [];
-    const txs = await prisma.transaction.findMany({
-      where: { vendorId: vendor.id },
-      select: { id: true, title: true, amount: true, createdAt: true },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-    return txs.map((t) => ({
-      id: t.id,
-      label: `${t.title} — ₦${t.amount.toLocaleString()}`,
-    }));
+    if (!vendor) return { data: [], meta: buildMeta(0, page, limit) };
+
+    const where = { vendorId: vendor.id };
+    const [txs, total] = await Promise.all([
+      prisma.transaction.findMany({
+        where,
+        select: { id: true, title: true, amount: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: txs.map((t) => ({
+        id: t.id,
+        label: `${t.title} — ₦${t.amount.toLocaleString()}`,
+      })),
+      meta: buildMeta(total, page, limit),
+    };
   }
 
   if (role === "rider") {
     const rider = await prisma.riderProfile.findUnique({ where: { userId } });
-    if (!rider) return [];
-    const txs = await prisma.transaction.findMany({
-      where: { riderId: rider.id },
-      select: { id: true, title: true, amount: true, createdAt: true },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-    return txs.map((t) => ({
-      id: t.id,
-      label: `${t.title} — ₦${t.amount.toLocaleString()}`,
-    }));
+    if (!rider) return { data: [], meta: buildMeta(0, page, limit) };
+
+    const where = { riderId: rider.id };
+    const [txs, total] = await Promise.all([
+      prisma.transaction.findMany({
+        where,
+        select: { id: true, title: true, amount: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: txs.map((t) => ({
+        id: t.id,
+        label: `${t.title} — ₦${t.amount.toLocaleString()}`,
+      })),
+      meta: buildMeta(total, page, limit),
+    };
   }
 
-  return [];
+  return { data: [], meta: buildMeta(0, page, limit) };
 };
 
 export const getLegalDocument = async (role: Role, slug: string) => {
@@ -150,6 +186,7 @@ export const getLegalDocument = async (role: Role, slug: string) => {
 };
 
 export const getHelpCategories = async (role: Role) => {
+  // Categories are generally static/limited, so fetching all is standard practice here
   return prisma.helpCategory.findMany({
     where: { role },
     include: {

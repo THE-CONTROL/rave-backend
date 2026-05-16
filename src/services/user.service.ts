@@ -791,31 +791,41 @@ export const requestRefund = async (
 // Referrals
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getReferralStats = async (userId: string) => {
+export const getReferralStats = async (
+  userId: string, 
+  query: PaginationQuery = {}
+) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { referralCode: true },
   });
   if (!user) throw AppError.notFound("User");
 
-  const [referrals, totalEarned] = await Promise.all([
+  const { page, limit, skip } = parsePagination(query);
+
+  const [referrals, totalReferrals, totalEarned, pendingReferrals] = await Promise.all([
     prisma.referral.findMany({
       where: { referrerId: userId },
       include: { referee: { select: { fullName: true, imageUrl: true } } },
       orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
     }),
+    prisma.referral.count({ where: { referrerId: userId } }),
     prisma.transaction.aggregate({
       where: { userId, type: "referral", status: "completed" },
       _sum: { amount: true },
     }),
+    prisma.referral.count({ where: { referrerId: userId, status: "pending" } })
   ]);
 
   return {
     referralCode: user.referralCode,
-    totalReferrals: referrals.length,
+    totalReferrals,
     amountEarned: totalEarned._sum?.amount ?? 0,
-    pendingReferrals: referrals.filter((r) => r.status === "pending").length,
+    pendingReferrals,
     referrals,
+    meta: buildMeta(totalReferrals, page, limit),
   };
 };
 
@@ -1034,14 +1044,24 @@ export const getUsualOrders = async (userId: string) => {
 // Favorites — GET lists
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getFavoriteRestaurants = async (userId: string) => {
-  const favorites = await prisma.favoriteRestaurant.findMany({
-    where: { userId },
-    include: { vendor: true },
-    orderBy: { id: "desc" },
-  });
+export const getFavoriteRestaurants = async (
+  userId: string, 
+  query: PaginationQuery = {}
+) => {
+  const { page, limit, skip } = parsePagination(query);
 
-  return favorites
+  const [favorites, total] = await Promise.all([
+    prisma.favoriteRestaurant.findMany({
+      where: { userId },
+      include: { vendor: true },
+      orderBy: { id: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.favoriteRestaurant.count({ where: { userId } })
+  ]);
+
+  const data = favorites
     .filter((f) => f.vendor)
     .map((f) => {
       const v = f.vendor;
@@ -1062,35 +1082,50 @@ export const getFavoriteRestaurants = async (userId: string) => {
         isFavorite: true,
       };
     });
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
-export const getFavoriteProducts = async (userId: string) => {
-  const favorites = await prisma.favoriteProduct.findMany({
-    where: { userId },
-    include: {
-      menuItem: {
-        include: {
-          vendor: {
-            select: {
-              id: true,
-              storeName: true,
-              logoUrl: true,
-              isOpen: true,
-              averageRating: true,
+export const getFavoriteProducts = async (
+  userId: string, 
+  query: PaginationQuery = {}
+) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  const [favorites, total] = await Promise.all([
+    prisma.favoriteProduct.findMany({
+      where: { userId },
+      include: {
+        menuItem: {
+          include: {
+            vendor: {
+              select: {
+                id: true,
+                storeName: true,
+                logoUrl: true,
+                isOpen: true,
+                averageRating: true,
+              },
             },
-          },
-          images: true,
-          ingredients: true,
-          categories: {
-            include: { category: { select: { id: true, name: true } } },
+            images: true,
+            ingredients: true,
+            categories: {
+              include: { category: { select: { id: true, name: true } } },
+            },
           },
         },
       },
-    },
-    orderBy: { id: "desc" },
-  });
+      orderBy: { id: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.favoriteProduct.count({ where: { userId } })
+  ]);
 
-  return favorites.map((f) => ({
+  const data = favorites.map((f) => ({
     id: f.menuItem.id,
     name: f.menuItem.name,
     description: f.menuItem.description ?? null,
@@ -1129,6 +1164,11 @@ export const getFavoriteProducts = async (userId: string) => {
     })),
     customGroups: [],
   }));
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getRiderLocationForOrder = async (

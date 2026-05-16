@@ -15,6 +15,7 @@ import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import { sendOtpEmail } from "@/utils/email";
 import axios from "axios";
+import { DeliveryStatus } from "@prisma/client";
 
 const ps = axios.create({
   baseURL: "https://api.paystack.co",
@@ -398,8 +399,12 @@ export const getDashboardStats = async (userId: string) => {
   };
 };
 
-export const getAvailableOrders = async (userId: string) => {
+export const getAvailableOrders = async (
+  userId: string,
+  query: PaginationQuery = {},
+) => {
   const rider = await _requireRider(userId);
+  const { page, limit, skip } = parsePagination(query);
 
   if (!rider.currentLat || !rider.currentLng) {
     throw AppError.badRequest(
@@ -408,28 +413,34 @@ export const getAvailableOrders = async (userId: string) => {
   }
 
   // Orders that are "ready" and have no assigned rider yet
-  const orders = await prisma.order.findMany({
-    where: {
-      status: "ready",
-      delivery: null,
-    },
-    include: {
-      vendor: {
-        select: {
-          storeName: true,
-          logoUrl: true,
-          address: true,
-          lat: true,
-          lng: true,
-        },
-      },
-      items: { select: { name: true, qty: true } },
-    },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  });
+  const where = {
+    status: "ready" as const,
+    delivery: null,
+  };
 
-  return orders.map((o) => {
+  const [orders, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: {
+        vendor: {
+          select: {
+            storeName: true,
+            logoUrl: true,
+            address: true,
+            lat: true,
+            lng: true,
+          },
+        },
+        items: { select: { name: true, qty: true } },
+      },
+      orderBy: { createdAt: "asc" },
+      skip,
+      take: limit,
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  const data = orders.map((o) => {
     // Distance from rider to vendor (pickup leg)
     const distanceKm =
       rider.currentLat && rider.currentLng && o.vendor.lat && o.vendor.lng
@@ -461,6 +472,11 @@ export const getAvailableOrders = async (userId: string) => {
       items: o.items,
     };
   });
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const acceptOrder = async (
@@ -606,34 +622,48 @@ export const acceptOrder = async (
 // Deliveries
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getOngoingDeliveries = async (userId: string) => {
+export const getOngoingDeliveries = async (
+  userId: string,
+  query: PaginationQuery = {},
+) => {
   const rider = await _requireRider(userId);
+  const { page, limit, skip } = parsePagination(query);
 
-  const deliveries = await prisma.delivery.findMany({
-    where: {
-      riderId: rider.id,
-      status: { in: ["not_accepted", "pending", "ongoing"] },
-    },
-    include: {
-      order: {
-        include: {
-          vendor: {
-            select: {
-              storeName: true,
-              logoUrl: true,
-              address: true,
-              user: { select: { phone: true } },
+  const where = {
+    riderId: rider.id,
+    status: { in: ["not_accepted", "pending", "ongoing"] as DeliveryStatus[] },
+  };
+
+  const [deliveries, total] = await Promise.all([
+    prisma.delivery.findMany({
+      where,
+      include: {
+        order: {
+          include: {
+            vendor: {
+              select: {
+                storeName: true,
+                logoUrl: true,
+                address: true,
+                user: { select: { phone: true } },
+              },
             },
+            user: { select: { fullName: true, phone: true } },
+            items: { select: { name: true, qty: true } },
           },
-          user: { select: { fullName: true, phone: true } },
-          items: { select: { name: true, qty: true } },
         },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.delivery.count({ where }),
+  ]);
 
-  return deliveries.map(_formatDelivery);
+  return {
+    data: deliveries.map(_formatDelivery),
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getPastDeliveries = async (
@@ -647,10 +677,10 @@ export const getPastDeliveries = async (
   const rider = await _requireRider(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  const statusFilter =
+  const statusFilter: DeliveryStatus[] =
     query.status && query.status !== "all"
-      ? [query.status]
-      : ["delivered", "cancelled"];
+      ? [query.status as DeliveryStatus]
+      : ["delivered" as DeliveryStatus, "cancelled" as DeliveryStatus];
 
   const where: any = {
     riderId: rider.id,

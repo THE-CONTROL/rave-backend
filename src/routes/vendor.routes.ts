@@ -1,7 +1,6 @@
 // src/routes/vendor.routes.ts
 import { Router } from "express";
 import * as ctrl from "../controllers/vendor.controller";
-import * as paymentCtrl from "../controllers/payment.controller";
 import * as orderCtrl from "../controllers/order.controller";
 import { authenticate, authorize } from "../middleware/auth";
 import { validate } from "../middleware/validate";

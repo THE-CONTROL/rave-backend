@@ -213,10 +213,8 @@ export const deleteBankAccount = asyncHandler(async (req, res) => {
 // ── Promotions ────────────────────────────────────────────────────────────────
 
 export const getPromotions = asyncHandler(async (req, res) => {
-  ok(
-    res,
-    await vendorService.getPromotions(uid(req), req.query.status as string),
-  );
+  const result = await vendorService.getPromotions(uid(req), req.query as any);
+  ok(res, result.data, "Promotions retrieved.", result.meta);
 });
 
 export const getPromotionById = asyncHandler(async (req, res) => {
@@ -275,7 +273,12 @@ export const getBadgeById = asyncHandler(async (req, res) => {
 // ── Referrals ─────────────────────────────────────────────────────────────────
 
 export const getReferralStats = asyncHandler(async (req, res) => {
-  ok(res, await vendorService.getVendorReferralStats(uid(req)));
+  // Destructure the meta out so we can pass it cleanly as the 4th argument to `ok()`
+  const { meta, ...data } = await vendorService.getVendorReferralStats(
+    uid(req),
+    req.query as any,
+  );
+  ok(res, data, "Referral stats retrieved.", meta);
 });
 
 // ── Notifications ─────────────────────────────────────────────────────────────
@@ -319,7 +322,7 @@ export const saveVendorOnboardingStep = asyncHandler(async (req, res) => {
     res,
     await vendorService.saveVendorOnboardingStep(
       uid(req),
-      Number(req.params.step),
+      Number(req.params.step) || req.params.step, // Safely handles "1.5" or 1
       req.body,
     ),
     "Step saved.",

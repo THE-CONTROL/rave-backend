@@ -1,7 +1,7 @@
 // src/controllers/catalog.controller.ts
 import { Request, Response } from "express";
 import * as catalogService from "../services/catalog.service";
-import { AuthenticatedRequest, extractPagination } from "../types";
+import { AuthenticatedRequest } from "../types";
 import { ok, asyncHandler } from "../utils";
 
 const optionalUid = (req: Request): string | undefined =>
@@ -23,13 +23,13 @@ export const getRestaurantDetails = asyncHandler(async (req, res) => {
 });
 
 export const getRestaurantMenu = asyncHandler(async (req, res) => {
-  ok(
-    res,
-    await catalogService.getRestaurantMenu(
-      req.params.id,
-      req.query.categoryId as string,
-    ),
+  const result = await catalogService.getRestaurantMenu(
+    req.params.id,
+    req.query as any,
+    optionalUid(req),
+    req.query.categoryId as string,
   );
+  ok(res, result);
 });
 
 export const getRestaurantCategories = asyncHandler(async (req, res) => {
@@ -83,7 +83,13 @@ export const getItemsByCategory = asyncHandler(async (req, res) => {
 });
 
 export const getBreakfastPicks = asyncHandler(async (req, res) => {
-  ok(res, await catalogService.getBreakfastPicks());
+  ok(
+    res,
+    await catalogService.getBreakfastPicks({
+      userId: optionalUid(req),
+      radiusKm: req.query.radiusKm as string | undefined,
+    }),
+  );
 });
 
 export const getRatingDistribution = asyncHandler(async (req, res) => {

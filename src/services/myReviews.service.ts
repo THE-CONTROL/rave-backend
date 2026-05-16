@@ -1,32 +1,45 @@
 // src/services/myReviews.service.ts
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
+import { parsePagination, buildMeta } from "../utils";
+import { PaginationQuery } from "../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pending reviews — delivered orders with no review yet
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getPendingReviews = async (userId: string) => {
-  const deliveredOrders = await prisma.order.findMany({
-    where: {
-      userId,
-      status: "completed",
-      review: null, // no review submitted yet
-    },
-    include: {
-      items: {
-        take: 1,
-        include: {
-          menuItem: { select: { name: true, images: true, price: true } },
-        },
-      },
-      vendor: { select: { storeName: true } },
-    },
-    orderBy: { updatedAt: "desc" },
-    take: 20,
-  });
+export const getPendingReviews = async (
+  userId: string,
+  query: PaginationQuery,
+) => {
+  const { page, limit, skip } = parsePagination(query);
 
-  return deliveredOrders.map((order) => {
+  const where: any = {
+    userId,
+    status: "completed",
+    review: null, // no review submitted yet
+  };
+
+  const [deliveredOrders, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: {
+        items: {
+          take: 1,
+          include: {
+            menuItem: { select: { name: true, images: true, price: true } },
+          },
+        },
+        vendor: { select: { storeName: true } },
+      },
+      orderBy: { updatedAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  const data = deliveredOrders.map((order) => {
     const firstItem = order.items[0];
     return {
       id: order.id,
@@ -38,32 +51,49 @@ export const getPendingReviews = async (userId: string) => {
       qty: order.items.reduce((s, i) => s + i.qty, 0),
     };
   });
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Past reviews — orders the user has already reviewed
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getPastReviews = async (userId: string) => {
-  const reviews = await prisma.review.findMany({
-    where: { userId },
-    include: {
-      order: {
-        include: {
-          items: {
-            take: 1,
-            include: {
-              menuItem: { select: { name: true, images: true, price: true } },
+export const getPastReviews = async (
+  userId: string,
+  query: PaginationQuery,
+) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  const where: any = { userId };
+
+  const [reviews, total] = await Promise.all([
+    prisma.review.findMany({
+      where,
+      include: {
+        order: {
+          include: {
+            items: {
+              take: 1,
+              include: {
+                menuItem: { select: { name: true, images: true, price: true } },
+              },
             },
+            vendor: { select: { storeName: true } },
           },
-          vendor: { select: { storeName: true } },
         },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.review.count({ where }),
+  ]);
 
-  return reviews.map((r) => {
+  const data = reviews.map((r) => {
     const firstItem = r.order.items[0];
     return {
       id: r.id,
@@ -81,6 +111,11 @@ export const getPastReviews = async (userId: string) => {
       createdAt: r.createdAt,
     };
   });
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

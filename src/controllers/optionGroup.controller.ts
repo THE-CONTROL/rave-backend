@@ -8,7 +8,8 @@ const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
 
 export const getOptionGroups = asyncHandler(
   async (req: Request, res: Response) => {
-    ok(res, await optionGroupService.getOptionGroups(uid(req)));
+    // FIX: Pass req.query to handle pagination
+    ok(res, await optionGroupService.getOptionGroups(uid(req), req.query));
   },
 );
 

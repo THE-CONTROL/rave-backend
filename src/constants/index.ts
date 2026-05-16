@@ -66,15 +66,6 @@ export const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Upload limits
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const UPLOAD = {
-  MAX_ATTACHMENTS: 5,
-  ALLOWED_MIME_TYPES: ["image/jpeg", "image/png", "image/webp", "video/mp4"],
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Token TTLs (in seconds, for reference — actual values set via JWT options)
 // ─────────────────────────────────────────────────────────────────────────────
 

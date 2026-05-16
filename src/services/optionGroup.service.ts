@@ -1,18 +1,37 @@
 // src/services/optionGroup.service.ts
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
+import { parsePagination, buildMeta } from "../utils";
+import { PaginationQuery } from "../types";
 
-export const getOptionGroups = async (vendorId: string) => {
-  return prisma.optionGroup.findMany({
-    where: { vendorId },
-    include: {
-      options: {
-        include: { sizes: { orderBy: { sortOrder: "asc" } } },
-        orderBy: { sortOrder: "asc" },
+export const getOptionGroups = async (
+  vendorId: string,
+  query: PaginationQuery,
+) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  const where = { vendorId };
+
+  const [data, total] = await Promise.all([
+    prisma.optionGroup.findMany({
+      where,
+      include: {
+        options: {
+          include: { sizes: { orderBy: { sortOrder: "asc" } } },
+          orderBy: { sortOrder: "asc" },
+        },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.optionGroup.count({ where }),
+  ]);
+
+  return {
+    data,
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getOptionGroupById = async (vendorId: string, id: string) => {
