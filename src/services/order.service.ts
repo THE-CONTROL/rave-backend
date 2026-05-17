@@ -292,17 +292,6 @@ export const calculateCartSummary = async (userId: string) => {
     include: { menuItem: true },
   });
 
-  if (!cartItems.length) {
-    return {
-      subtotal: 0,
-      vat: 0,
-      deliveryFee: 0,
-      serviceFee: 0,
-      total: 0,
-      itemCount: 0,
-    };
-  }
-
   const subtotal = cartItems.reduce(
     (s, ci) => s + ci.menuItem.price * ci.qty,
     0,
