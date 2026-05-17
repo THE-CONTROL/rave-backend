@@ -52,6 +52,7 @@ enum TransactionType {
 enum TransactionStatus {
   initiated
   completed
+  failed
 }
 
 enum NotificationType {

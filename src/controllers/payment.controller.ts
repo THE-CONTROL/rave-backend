@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { ok, asyncHandler } from "../utils";
 import * as paymentService from "../services/payment.service";
 import { AuthenticatedRequest } from "../types";
+import { prisma } from "@/config/database";
 
 const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
 
@@ -107,4 +108,27 @@ export const webhook = asyncHandler(async (req: Request, res: Response) => {
   // Process after — if this fails, your idempotency check (FIN_ prefix)
   // protects against double-processing on any retry anyway
   await paymentService.handleWebhook(req.body.event, req.body.data);
+});
+
+export const checkPaymentStatus = asyncHandler(async (req, res) => {
+  const { reference } = req.params;
+
+  const transaction = await prisma.transaction.findUnique({
+    where: { reference },
+    select: { status: true },
+  });
+
+  if (!transaction) {
+    ok(res, { status: "pending" });
+    return;
+  }
+
+  const status =
+    transaction.status === "completed"
+      ? "success"
+      : transaction.status === "failed"
+        ? "failed"
+        : "pending";
+
+  ok(res, { status });
 });
