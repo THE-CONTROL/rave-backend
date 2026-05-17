@@ -12,10 +12,10 @@ router.post("/webhook", ctrl.webhook);
 router.get("/banks", ctrl.listBanks);
 router.get("/resolve-account", ctrl.resolveAccount);
 
+// Callback — Paystack redirects the user's browser here after payment
+router.get("/callback", ctrl.handleCallback);
+
 // Everything below requires auth
 router.use(authenticate);
-
-// Callback — Paystack redirects the user's browser here after payment
-router.get("/callback", ctrl.handleCallback); // Add this line
 
 export default router;
