@@ -33,58 +33,56 @@ export const initializePayment = asyncHandler(
   },
 );
 
-// ── Paystack Callback ─────────────────────────────────────────────────────────
-// Called by Paystack after the user completes or abandons payment.
-// Only redirects back to the app — order creation happens on the frontend
-// via POST /user/orders after the frontend sees a success status.
 export const handleCallback = async (req: Request, res: Response) => {
   const { reference } = req.query;
 
   if (!reference) {
-    return res.send(
-      buildRedirectPage(
-        `rave://authenticated/user/transactions/cart/checkout?status=failed`,
-      ),
-    );
+    res.send(buildClosePage());
+    return;
   }
 
   try {
-    const result = await paymentService.verifyPayment(reference as string);
-    const status =
-      result.status === "success" || result.status === "already_processed"
-        ? "success"
-        : "failed";
-
-    return res.send(
-      buildRedirectPage(
-        `rave://authenticated/user/transactions/cart/checkout?status=${status}&reference=${reference}`,
-      ),
-    );
+    await paymentService.verifyPayment(reference as string);
   } catch {
-    return res.send(
-      buildRedirectPage(
-        `rave://authenticated/user/transactions/cart/checkout?status=failed`,
-      ),
-    );
+    // Even if verification fails here, webhook is the backup
   }
+
+  // Just close — polling handles the rest
+  res.send(buildClosePage());
 };
 
-// Returns an HTML page that immediately opens the app deep link
-function buildRedirectPage(deepLink: string): string {
+function buildClosePage(): string {
   return `
     <!DOCTYPE html>
     <html>
       <head>
         <meta charset="utf-8" />
-        <meta http-equiv="refresh" content="0;url=${deepLink}" />
-        <title>Redirecting...</title>
+        <title>Payment Complete</title>
         <script>
-          window.location.href = "${deepLink}";
+          // Close the browser tab/window
+          window.close();
         </script>
+        <style>
+          body {
+            font-family: -apple-system, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background: #f9fafb;
+            color: #344054;
+          }
+          .icon { font-size: 64px; margin-bottom: 16px; }
+          h2 { font-size: 22px; font-weight: 700; margin: 0 0 8px; }
+          p { font-size: 15px; color: #667085; margin: 0; }
+        </style>
       </head>
       <body>
-        <p>Redirecting back to app...</p>
-        <a href="${deepLink}">Tap here if you are not redirected automatically</a>
+        <div class="icon">✅</div>
+        <h2>Payment Received</h2>
+        <p>You can close this page and return to the app.</p>
       </body>
     </html>
   `;
