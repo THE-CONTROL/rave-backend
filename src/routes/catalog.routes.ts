@@ -18,7 +18,7 @@ router.get("/products/:id/reviews", ctrl.getProductReviews);
 
 router.get("/search", optionalAuth, ctrl.search);
 router.get("/categories", ctrl.getFoodCategories);
-router.get("/categories/:name/items", ctrl.getItemsByCategory);
+router.get("/categories/:name/items", optionalAuth, ctrl.getItemsByCategory);
 router.get("/breakfast-picks", optionalAuth, ctrl.getBreakfastPicks);
 
 router.get("/vendors", optionalAuth, ctrl.getAllVendors);
