@@ -40,29 +40,54 @@ export const handleCallback = async (req: Request, res: Response) => {
   const { reference } = req.query;
 
   if (!reference) {
-    return res.redirect(
-      `rave://authenticated/user/transactions/cart/checkout?status=failed`,
+    return res.send(
+      buildRedirectPage(
+        `rave://authenticated/user/transactions/cart/checkout?status=failed`,
+      ),
     );
   }
 
   try {
-    // Verify with Paystack so the transaction record is updated
     const result = await paymentService.verifyPayment(reference as string);
-
     const status =
       result.status === "success" || result.status === "already_processed"
         ? "success"
         : "failed";
 
-    return res.redirect(
-      `rave://authenticated/user/transactions/cart/checkout?status=${status}&reference=${reference}`,
+    return res.send(
+      buildRedirectPage(
+        `rave://authenticated/user/transactions/cart/checkout?status=${status}&reference=${reference}`,
+      ),
     );
   } catch {
-    return res.redirect(
-      `rave://authenticated/user/transactions/cart/checkout?status=failed`,
+    return res.send(
+      buildRedirectPage(
+        `rave://authenticated/user/transactions/cart/checkout?status=failed`,
+      ),
     );
   }
 };
+
+// Returns an HTML page that immediately opens the app deep link
+function buildRedirectPage(deepLink: string): string {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta http-equiv="refresh" content="0;url=${deepLink}" />
+        <title>Redirecting...</title>
+        <script>
+          window.location.href = "${deepLink}";
+        </script>
+      </head>
+      <body>
+        <p>Redirecting back to app...</p>
+        <a href="${deepLink}">Tap here if you are not redirected automatically</a>
+      </body>
+    </html>
+  `;
+}
 
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
   const secret = process.env.PAYSTACK_SECRET_KEY ?? "";

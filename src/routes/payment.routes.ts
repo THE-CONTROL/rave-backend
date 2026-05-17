@@ -1,7 +1,6 @@
 // src/routes/payment.routes.ts
 import { Router } from "express";
 import * as ctrl from "../controllers/payment.controller";
-import { authenticate, authorize } from "@/middleware/auth";
 
 const router = Router();
 
