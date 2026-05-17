@@ -113,22 +113,29 @@ export const webhook = asyncHandler(async (req: Request, res: Response) => {
 export const checkPaymentStatus = asyncHandler(async (req, res) => {
   const { reference } = req.params;
 
-  const transaction = await prisma.transaction.findUnique({
+  // Check for the completed leg — verifyAndCompleteTransaction creates
+  // a new record with FIN_ prefix rather than updating the original
+  const completedTx = await prisma.transaction.findUnique({
+    where: { reference: `FIN_${reference}` },
+    select: { status: true },
+  });
+
+  if (completedTx) {
+    ok(res, { status: "success" });
+    return;
+  }
+
+  // Check if the initiated record exists at all
+  const initiatedTx = await prisma.transaction.findUnique({
     where: { reference },
     select: { status: true },
   });
 
-  if (!transaction) {
+  if (!initiatedTx) {
     ok(res, { status: "pending" });
     return;
   }
 
-  const status =
-    transaction.status === "completed"
-      ? "success"
-      : transaction.status === "failed"
-        ? "failed"
-        : "pending";
-
-  ok(res, { status });
+  // Initiated exists but no FIN_ record yet — still pending
+  ok(res, { status: "pending" });
 });
