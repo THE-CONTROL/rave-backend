@@ -119,11 +119,19 @@ export const updateCartItemSchema = z.object({
   extras: z.array(z.string().uuid()).optional(),
 });
 
-export const checkoutSchema = z.object({
-  savedLocationId: z.string().uuid("Please select a valid delivery location"),
+export const initializePaymentSchema = z.object({
+  savedLocationId: z.string().uuid(),
   paymentMethod: z.enum(["card", "bank_transfer"]),
-  instructions: z.string().max(200, "Instructions too long").optional(),
+  instructions: z.string().optional(),
   contactMethod: z.enum(["in-app", "normal"]).default("in-app"),
+});
+
+export const createOrderSchema = z.object({
+  savedLocationId: z.string().uuid(),
+  paymentMethod: z.enum(["card", "bank_transfer"]),
+  instructions: z.string().optional(),
+  contactMethod: z.enum(["in-app", "normal"]).default("in-app"),
+  reference: z.string().min(1), // Paystack reference — required
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

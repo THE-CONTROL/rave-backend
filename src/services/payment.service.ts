@@ -1,6 +1,7 @@
 import axios from "axios";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
+import { getCart } from "./user.service";
 
 const ps = axios.create({
   baseURL: "https://api.paystack.co",
@@ -55,6 +56,63 @@ export const initializeCheckout = async (
     authorizationUrl: data.data.authorization_url,
     reference: initiatedTx.reference,
   };
+};
+
+export interface InitializePaymentInput {
+  savedLocationId: string;
+  paymentMethod: string;
+  instructions?: string;
+  contactMethod?: string;
+}
+
+// ── Initialize Payment ────────────────────────────────────────────────────────
+// Validates the cart and location, then initializes a Paystack transaction.
+// Does NOT create an order — the order is created only after payment succeeds.
+export const initializePayment = async (
+  userId: string,
+  dto: InitializePaymentInput,
+): Promise<{ paymentUrl: string; reference: string }> => {
+  const { items, summary } = await getCart(userId);
+
+  if (!items.length || !summary) {
+    throw AppError.badRequest("Your cart is empty.");
+  }
+
+  const loc = await prisma.savedLocation.findFirst({
+    where: { id: dto.savedLocationId, userId },
+  });
+  if (!loc) throw AppError.notFound("Saved location");
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+  if (!user) throw AppError.notFound("User not found");
+
+  const vendorId = items[0].menuItem.vendorId;
+
+  // Initialize Paystack — pass null for orderId since no order exists yet
+  const payment = await initializeCheckout(
+    user.email,
+    summary.total,
+    dto.paymentMethod as "card" | "bank_transfer",
+    "order",
+    vendorId,
+    userId,
+    "",
+  );
+
+  return {
+    paymentUrl: payment.authorizationUrl,
+    reference: payment.reference as string,
+  };
+};
+
+// ── Verify Payment ────────────────────────────────────────────────────────────
+// Verifies a Paystack reference. Used by the callback handler.
+export const verifyPayment = async (reference: string) => {
+  // Delegate to your existing Paystack verification logic
+  return verifyAndCompleteTransaction(reference);
 };
 
 // ──────────────────s───────────────────────────────────────────────────────────

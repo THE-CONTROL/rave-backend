@@ -10,6 +10,7 @@ import { AppError } from "../utils/AppError";
 import { ORDER_STATUS_TRANSITIONS } from "../constants";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
+import { getCart } from "./user.service";
 
 type OrderStatus =
   | "new"
@@ -79,6 +80,97 @@ export const cancelOrderByUser = async (
 
   // Notify vendor too
   await notif.notifyVendorOrderCancelled(order.vendor.userId, orderId);
+};
+
+export interface CreateOrderInput {
+  savedLocationId: string;
+  paymentMethod: string;
+  instructions?: string;
+  contactMethod?: string;
+  reference: string;
+}
+
+// ── Create Order ──────────────────────────────────────────────────────────────
+// Called only after the frontend confirms Paystack payment success.
+// Guards against duplicate orders for the same reference.
+export const createOrder = async (
+  userId: string,
+  dto: CreateOrderInput,
+): Promise<{ orderId: string }> => {
+  // ── Guard: prevent duplicate orders for the same payment reference ─────────
+  const existingOrder = await prisma.order.findFirst({
+    where: { evidenceUrl: dto.reference },
+    select: { orderId: true },
+  });
+  if (existingOrder) {
+    // Idempotent — return the existing order rather than throwing
+    return { orderId: existingOrder.orderId };
+  }
+
+  const { items, summary } = await getCart(userId);
+  if (!items.length || !summary) {
+    throw AppError.badRequest("Cart is empty. Cannot create order.");
+  }
+
+  const loc = await prisma.savedLocation.findFirst({
+    where: { id: dto.savedLocationId, userId },
+  });
+  if (!loc) throw AppError.notFound("Saved location");
+
+  const vendorId = items[0].menuItem.vendorId;
+
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: vendorId },
+    select: { autoAcceptOrders: true },
+  });
+
+  const initialStatus = vendor?.autoAcceptOrders ? "preparing" : "new";
+  const etaMinutes = 25;
+  const arrivalTime = new Date();
+  arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
+
+  // ── Create the order ───────────────────────────────────────────────────────
+  const order = await prisma.order.create({
+    data: {
+      userId,
+      vendorId,
+      totalAmount: summary.total,
+      deliveryFee: summary.deliveryFee || 0,
+      vat: summary.vat || 0,
+      serviceFee: summary.serviceFee || 0,
+      discountAmount: summary.discountAmount || 0,
+      paymentMethod: dto.paymentMethod as "card" | "bank_transfer",
+      status: initialStatus,
+      estimatedArrival: arrivalTime,
+      etaDuration: etaMinutes,
+      evidenceUrl: dto.reference, // ← Paystack reference as evidence
+      deliveryAddress: loc.description,
+      deliveryLat: loc.latitude,
+      deliveryLng: loc.longitude,
+      deliveryInstructions: dto.instructions ?? loc.instructions,
+      contactMethod: dto.contactMethod ?? "in-app",
+      items: {
+        create: items.map((item) => ({
+          menuItemId: item.menuItem.id,
+          name: item.menuItem.name,
+          qty: item.qty,
+          price: item.currentPrice,
+          extras: item.extras ?? [],
+        })),
+      },
+    },
+  });
+
+  // ── Clear cart ─────────────────────────────────────────────────────────────
+  await prisma.cartItem.deleteMany({ where: { userId } });
+
+  // ── Notify ─────────────────────────────────────────────────────────────────
+  const itemsSummary = items
+    .map((i) => `${i.qty}x ${i.menuItem.name}`)
+    .join(", ");
+  notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, summary.total);
+
+  return { orderId: order.orderId };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

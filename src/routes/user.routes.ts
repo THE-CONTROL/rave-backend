@@ -4,6 +4,7 @@ import * as ctrl from "../controllers/user.controller";
 import * as orderCtrl from "../controllers/order.controller";
 import * as reviewCtrl from "../controllers/myReviews.controller";
 import * as walletCtrl from "../controllers/wallet.controller";
+import * as paymentCtrl from "../controllers/payment.controller";
 import { authenticate, authorize } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import * as v from "../validators";
@@ -46,7 +47,21 @@ router.patch(
 router.delete("/cart/:menuItemId", ctrl.removeFromCart);
 router.delete("/cart", ctrl.clearCart);
 router.post("/cart/promo", ctrl.previewPromo);
-router.post("/cart/checkout", validate(v.checkoutSchema), ctrl.processCheckout);
+// ── Payment ───────────────────────────────────────────────────────────────────
+// Initialize Paystack payment — no order created yet
+router.post(
+  "/payment/initialize",
+  validate(v.initializePaymentSchema),
+  paymentCtrl.initializePayment,
+);
+
+// Paystack callback — called by Paystack after payment (no auth)
+// This should be on a public router, not behind authenticate
+// router.get("/payment/callback", paymentCtrl.handleCallback);
+
+// ── Orders ────────────────────────────────────────────────────────────────────
+// Create order — only called after frontend confirms payment success
+router.post("/orders", validate(v.createOrderSchema), orderCtrl.createOrder);
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 router.get("/orders", ctrl.getOrders);

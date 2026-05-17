@@ -22,11 +22,20 @@ export const resolveAccount = asyncHandler(async (req, res) => {
   ok(res, { accountName });
 });
 
-/**
- * Paystack GET Callback
- * This handles the browser redirect after a user completes payment.
- */
-// Backend callback — redirect to the actual checkout route
+// ── Initialize Payment ────────────────────────────────────────────────────────
+// Initializes Paystack transaction and returns the payment URL.
+// No order is created here.
+export const initializePayment = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await paymentService.initializePayment(uid(req), req.body);
+    ok(res, result, "Payment initialized.");
+  },
+);
+
+// ── Paystack Callback ─────────────────────────────────────────────────────────
+// Called by Paystack after the user completes or abandons payment.
+// Only redirects back to the app — order creation happens on the frontend
+// via POST /user/orders after the frontend sees a success status.
 export const handleCallback = async (req: Request, res: Response) => {
   const { reference } = req.query;
 
@@ -37,9 +46,8 @@ export const handleCallback = async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await paymentService.verifyAndCompleteTransaction(
-      reference as string,
-    );
+    // Verify with Paystack so the transaction record is updated
+    const result = await paymentService.verifyPayment(reference as string);
 
     const status =
       result.status === "success" || result.status === "already_processed"
@@ -47,7 +55,7 @@ export const handleCallback = async (req: Request, res: Response) => {
         : "failed";
 
     return res.redirect(
-      `rave://authenticated/user/transactions/cart/checkout?status=${status}`,
+      `rave://authenticated/user/transactions/cart/checkout?status=${status}&reference=${reference}`,
     );
   } catch {
     return res.redirect(
