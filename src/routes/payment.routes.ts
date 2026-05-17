@@ -1,7 +1,6 @@
 // src/routes/payment.routes.ts
 import { Router } from "express";
 import * as ctrl from "../controllers/payment.controller";
-import { authenticate } from "../middleware/auth";
 
 const router = Router();
 
@@ -14,8 +13,5 @@ router.get("/resolve-account", ctrl.resolveAccount);
 
 // Callback — Paystack redirects the user's browser here after payment
 router.get("/callback", ctrl.handleCallback);
-
-// Everything below requires auth
-router.use(authenticate);
 
 export default router;
