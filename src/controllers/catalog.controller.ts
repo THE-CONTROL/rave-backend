@@ -78,6 +78,7 @@ export const getItemsByCategory = asyncHandler(async (req, res) => {
   const result = await catalogService.getItemsByCategory(
     req.params.name,
     req.query as any,
+    optionalUid(req), // ← add this
   );
   ok(res, result.items, "Items retrieved.", result.meta);
 });
