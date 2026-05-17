@@ -307,6 +307,7 @@ export const calculateCartSummary = async (userId: string) => {
   return {
     subtotal,
     vat,
+    vatRate,
     deliveryFee,
     serviceFee,
     total,
