@@ -12,8 +12,6 @@ router.post("/webhook", ctrl.webhook);
 router.get("/banks", ctrl.listBanks);
 router.get("/resolve-account", ctrl.resolveAccount);
 
-router.use(authenticate, authorize("user"));
-
 // Callback — Paystack redirects the user's browser here after payment
 router.get("/callback", ctrl.handleCallback);
 
