@@ -256,11 +256,38 @@ export const search = async (
   if (!searchTerm)
     return { restaurants: [], foods: [], meta: buildMeta(0, page, limit) };
 
-  // Save to search history — fire and forget
   if (userId && searchTerm.length >= 2) {
     prisma.searchHistory
       .create({ data: { userId, query: searchTerm } })
       .catch(() => {});
+  }
+
+  // ── Fetch favorite IDs upfront for both types ──────────────────────────────
+  const favoriteVendorIds = new Set<string>();
+  const favoriteItemIds = new Set<string>();
+
+  if (userId) {
+    const [vendorFavs, itemFavs] = await Promise.all([
+      type === "restaurants" || type === "all"
+        ? prisma.favoriteRestaurant.findMany({
+            where: { userId },
+            select: { vendorId: true },
+          })
+        : Promise.resolve([]),
+      type === "foods" || type === "all"
+        ? prisma.favoriteProduct.findMany({
+            where: { userId },
+            select: { menuItemId: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    vendorFavs.forEach((f: { vendorId: string }) =>
+      favoriteVendorIds.add(f.vendorId),
+    );
+    itemFavs.forEach((f: { menuItemId: string }) =>
+      favoriteItemIds.add(f.menuItemId),
+    );
   }
 
   const results: Record<string, unknown> = {};
@@ -299,7 +326,7 @@ export const search = async (
       distanceLabel: null,
       closesIn: null,
       isYourUsual: false,
-      isFavorite: false,
+      isFavorite: favoriteVendorIds.has(v.id),
       deliveryTime: "25-35 mins",
     }));
   }
@@ -353,7 +380,7 @@ export const search = async (
       })),
       rating: 0,
       reviewCount: 0,
-      isFavorite: false,
+      isFavorite: favoriteItemIds.has(f.id),
       vendor: {
         id: f.vendor.id,
         storeName: f.vendor.storeName,
@@ -366,8 +393,6 @@ export const search = async (
     }));
   }
 
-  // To accurately return total records for meta search would require two parallel `.count()` requests.
-  // Using 0 here acts as a dummy pass-through if not fully implemented in the handler yet.
   return { ...results, meta: buildMeta(0, page, limit) };
 };
 
