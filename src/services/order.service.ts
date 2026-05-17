@@ -295,9 +295,9 @@ export const calculateCartSummary = async (userId: string) => {
   if (!cartItems.length) {
     return {
       subtotal: 0,
-      vat: 0,
-      deliveryFee: 0,
-      serviceFee: 0,
+      vat: cfg.fees.vatRate,
+      deliveryFee: cfg.fees.deliveryBase,
+      serviceFee: cfg.fees.serviceFee,
       total: 0,
       itemCount: 0,
     };
