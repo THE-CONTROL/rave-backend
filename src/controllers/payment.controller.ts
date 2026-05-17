@@ -26,11 +26,14 @@ export const resolveAccount = asyncHandler(async (req, res) => {
  * Paystack GET Callback
  * This handles the browser redirect after a user completes payment.
  */
+// Backend callback — redirect to the actual checkout route
 export const handleCallback = async (req: Request, res: Response) => {
   const { reference } = req.query;
 
   if (!reference) {
-    return res.redirect(`rave://checkout-result?status=failed`);
+    return res.redirect(
+      `rave://authenticated/user/transactions/cart/checkout?status=failed`,
+    );
   }
 
   try {
@@ -38,18 +41,17 @@ export const handleCallback = async (req: Request, res: Response) => {
       reference as string,
     );
 
-    if (result.status === "success" || result.status === "already_processed") {
-      return res.redirect(
-        `rave://checkout-result?status=success&reference=${reference}`,
-      );
-    }
+    const status =
+      result.status === "success" || result.status === "already_processed"
+        ? "success"
+        : "failed";
 
     return res.redirect(
-      `rave://checkout-result?status=failed&reference=${reference}`,
+      `rave://authenticated/user/transactions/cart/checkout?status=${status}`,
     );
   } catch {
     return res.redirect(
-      `rave://checkout-result?status=failed&reference=${reference}`,
+      `rave://authenticated/user/transactions/cart/checkout?status=failed`,
     );
   }
 };
