@@ -1,11 +1,16 @@
+// src/controllers/payment.controller.ts
 import { Request, Response } from "express";
 import crypto from "crypto";
-import { ok, asyncHandler } from "../utils";
+import { ok, asyncHandler, created } from "../utils";
 import * as paymentService from "../services/payment.service";
+import * as userService from "../services/user.service";
 import { AuthenticatedRequest } from "../types";
-import { prisma } from "@/config/database";
 
 const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Banks
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const listBanks = asyncHandler(async (_req, res) => {
   ok(res, await paymentService.getNigerianBanks());
@@ -23,15 +28,39 @@ export const resolveAccount = asyncHandler(async (req, res) => {
   ok(res, { accountName });
 });
 
-// ── Initialize Payment ────────────────────────────────────────────────────────
-// Initializes Paystack transaction and returns the payment URL.
-// No order is created here.
+// ─────────────────────────────────────────────────────────────────────────────
+// Initialize Payment — no order created yet
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const initializePayment = asyncHandler(
   async (req: Request, res: Response) => {
     const result = await paymentService.initializePayment(uid(req), req.body);
     ok(res, result, "Payment initialized.");
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Create Order — called after frontend confirms payment success
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createOrder = asyncHandler(async (req: Request, res: Response) => {
+  const result = await userService.createOrder(uid(req), req.body);
+  created(res, result, "Order placed successfully.");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Check Payment Status — polled by frontend after browser closes
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const checkPaymentStatus = asyncHandler(async (req, res) => {
+  const { reference } = req.params;
+  const result = await paymentService.checkPaymentStatus(reference);
+  ok(res, result);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Paystack Callback — browser redirect after payment
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const handleCallback = async (req: Request, res: Response) => {
   const { reference } = req.query;
@@ -41,16 +70,18 @@ export const handleCallback = async (req: Request, res: Response) => {
     return;
   }
 
+  // Verify and create FIN_ record — this ensures checkPaymentStatus
+  // succeeds on the first poll even if the webhook hasn't fired yet
   try {
     await paymentService.verifyPayment(reference as string);
   } catch {
-    // Even if verification fails here, webhook is the backup
+    // Swallow — webhook is the backup, polling will retry
   }
 
-  // Just close — polling handles the rest
   res.send(buildClosePage());
 };
 
+// Returns an HTML page that closes itself so openBrowserAsync resolves
 function buildClosePage(): string {
   return `
     <!DOCTYPE html>
@@ -59,12 +90,11 @@ function buildClosePage(): string {
         <meta charset="utf-8" />
         <title>Payment Complete</title>
         <script>
-          // Close the browser tab/window
           window.close();
         </script>
         <style>
           body {
-            font-family: -apple-system, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -76,7 +106,7 @@ function buildClosePage(): string {
           }
           .icon { font-size: 64px; margin-bottom: 16px; }
           h2 { font-size: 22px; font-weight: 700; margin: 0 0 8px; }
-          p { font-size: 15px; color: #667085; margin: 0; }
+          p { font-size: 15px; color: #667085; margin: 0; text-align: center; }
         </style>
       </head>
       <body>
@@ -88,6 +118,10 @@ function buildClosePage(): string {
   `;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Webhook — Paystack server-to-server notification
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
   const secret = process.env.PAYSTACK_SECRET_KEY ?? "";
   const hash = crypto
@@ -96,48 +130,14 @@ export const webhook = asyncHandler(async (req: Request, res: Response) => {
     .digest("hex");
 
   if (hash !== req.headers["x-paystack-signature"]) {
-    res.status(400).json({ success: false, message: "Invalid signature" });
+    // Return 200 so Paystack stops retrying invalid signature attempts
+    res.sendStatus(200);
     return;
   }
 
-  // Acknowledge first — Paystack won't retry if it gets 200 immediately
+  // Acknowledge immediately — Paystack requires 200 within 5 seconds
   res.sendStatus(200);
 
-  // Process after — if this fails, your idempotency check (FIN_ prefix)
-  // protects against double-processing on any retry anyway
+  // Process async — idempotency check (FIN_ prefix) handles retries safely
   await paymentService.handleWebhook(req.body.event, req.body.data);
-});
-
-export const checkPaymentStatus = asyncHandler(async (req, res) => {
-  const { reference } = req.params;
-
-  // Check FIN_ record first (normal flow)
-  const completedTx = await prisma.transaction.findUnique({
-    where: { reference: `FIN_${reference}` },
-    select: { status: true },
-  });
-
-  if (completedTx) {
-    ok(res, { status: "success" });
-    return;
-  }
-
-  // Also check if the initiated record itself was marked completed
-  // (happens when verifyAndCompleteTransaction updates in place)
-  const initiatedTx = await prisma.transaction.findUnique({
-    where: { reference },
-    select: { status: true },
-  });
-
-  if (initiatedTx?.status === "completed") {
-    ok(res, { status: "success" });
-    return;
-  }
-
-  if (initiatedTx?.status === "failed") {
-    ok(res, { status: "failed" });
-    return;
-  }
-
-  ok(res, { status: "pending" });
 });

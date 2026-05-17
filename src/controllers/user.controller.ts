@@ -114,6 +114,15 @@ export const processCheckout = asyncHandler(async (req, res) => {
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 
+// ── Create Order ──────────────────────────────────────────────────────────────
+// Called by the frontend AFTER Paystack confirms payment success.
+// Verifies the reference hasn't already been used, creates the order,
+// clears the cart, and sends notifications.
+export const createOrder = asyncHandler(async (req: Request, res: Response) => {
+  const result = await userService.createOrder(uid(req), req.body);
+  created(res, result, "Order placed successfully.");
+});
+
 export const getOrders = asyncHandler(async (req, res) => {
   const result = await userService.getOrders(uid(req), req.query as any);
   ok(res, { orders: result.orders }, "Orders retrieved.", result.meta);

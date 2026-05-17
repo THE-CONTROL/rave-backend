@@ -1,3 +1,4 @@
+// src/services/payment.service.ts
 import axios from "axios";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
@@ -9,8 +10,9 @@ const ps = axios.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Initialize Checkout (The "Initiated" Phase)
+// 1. Initialize Checkout
 // ─────────────────────────────────────────────────────────────────────────────
+
 export const initializeCheckout = async (
   email: string,
   amount: number,
@@ -20,7 +22,6 @@ export const initializeCheckout = async (
   userId?: string,
   orderId?: string,
 ) => {
-  // 1. Dynamic title based on type for a better UI ledger
   const titles: Record<string, string> = {
     order: "Order Payment",
     refund: "Refund Transaction",
@@ -28,12 +29,12 @@ export const initializeCheckout = async (
     payment: "General Payment",
   };
 
-  // 2. Create the record as 'initiated'
   const initiatedTx = await prisma.transaction.create({
     data: {
       userId,
-      orderId,
       vendorId,
+      // Only include orderId if provided — avoids FK constraint violation
+      ...(orderId ? { orderId } : {}),
       type,
       status: "initiated",
       title: titles[type] || "Transaction",
@@ -42,10 +43,9 @@ export const initializeCheckout = async (
     },
   });
 
-  // 3. Initialize with Paystack
   const { data } = await ps.post("/transaction/initialize", {
     email,
-    amount: Math.round(Math.abs(amount) * 100), // Ensure absolute positive value in Kobo
+    amount: Math.round(Math.abs(amount) * 100),
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
     callback_url:
@@ -58,6 +58,10 @@ export const initializeCheckout = async (
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Initialize Payment (new two-step flow — no order created)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export interface InitializePaymentInput {
   savedLocationId: string;
   paymentMethod: string;
@@ -65,9 +69,6 @@ export interface InitializePaymentInput {
   contactMethod?: string;
 }
 
-// ── Initialize Payment ────────────────────────────────────────────────────────
-// Validates the cart and location, then initializes a Paystack transaction.
-// Does NOT create an order — the order is created only after payment succeeds.
 export const initializePayment = async (
   userId: string,
   dto: InitializePaymentInput,
@@ -91,7 +92,7 @@ export const initializePayment = async (
 
   const vendorId = items[0].menuItem.vendorId;
 
-  // Initialize Paystack — pass null for orderId since no order exists yet
+  // Pass undefined for orderId — no order exists yet
   const payment = await initializeCheckout(
     user.email,
     summary.total,
@@ -108,22 +109,22 @@ export const initializePayment = async (
   };
 };
 
-// ── Verify Payment ────────────────────────────────────────────────────────────
-// Verifies a Paystack reference. Used by the callback handler.
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Verify Payment — delegates to verifyAndCompleteTransaction
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const verifyPayment = async (reference: string) => {
-  // Delegate to your existing Paystack verification logic
   return verifyAndCompleteTransaction(reference);
 };
 
-// ──────────────────s───────────────────────────────────────────────────────────
-// 2. Verification & Reconciliation (The "Completed" Phase)
 // ─────────────────────────────────────────────────────────────────────────────
+// 4. Verify & Complete Transaction
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const verifyAndCompleteTransaction = async (
   paystackTransactionId: string,
 ) => {
-  /**
-   * STEP A: Verify the payment with Paystack to get our reference back.
-   */
+  // Verify with Paystack
   const { data: psResponse } = await ps.get(
     `/transaction/verify/${paystackTransactionId}`,
   );
@@ -134,9 +135,7 @@ export const verifyAndCompleteTransaction = async (
 
   const ourReference = psResponse.data.reference;
 
-  /**
-   * STEP B: Find the 'initiated' record.
-   */
+  // Find the initiated record
   const initiatedTx = await prisma.transaction.findUnique({
     where: { reference: ourReference },
   });
@@ -145,10 +144,7 @@ export const verifyAndCompleteTransaction = async (
     throw AppError.notFound("Initial transaction record not found");
   }
 
-  /**
-   * STEP C: Idempotency Check.
-   * Verify if the 'completed' leg (FIN_) already exists.
-   */
+  // Idempotency: check if FIN_ record already exists
   const alreadyCompleted = await prisma.transaction.findUnique({
     where: { reference: `FIN_${ourReference}` },
   });
@@ -160,21 +156,18 @@ export const verifyAndCompleteTransaction = async (
     };
   }
 
-  /**
-   * STEP D: Create the NEW 'completed' Transaction record.
-   * This handles the actual ledger entry without touching any other models.
-   */
+  // Create the completed transaction record
   const result = await prisma.transaction.create({
     data: {
       userId: initiatedTx.userId,
       vendorId: initiatedTx.vendorId,
-      orderId: initiatedTx.orderId,
+      ...(initiatedTx.orderId ? { orderId: initiatedTx.orderId } : {}),
       type: initiatedTx.type,
       status: "completed",
       title: initiatedTx.title,
       amount: initiatedTx.amount,
       paymentMethod: initiatedTx.paymentMethod,
-      reference: `FIN_${ourReference}`, // Unique suffix to maintain DB integrity
+      reference: `FIN_${ourReference}`,
       subtotal: initiatedTx.subtotal,
       fee: initiatedTx.fee,
     },
@@ -188,11 +181,43 @@ export const verifyAndCompleteTransaction = async (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Webhook & Utilities
+// 5. Check Payment Status — used by polling
 // ─────────────────────────────────────────────────────────────────────────────
+
+export const checkPaymentStatus = async (
+  reference: string,
+): Promise<{ status: "success" | "failed" | "pending" }> => {
+  // First check if FIN_ record already exists (fastest path)
+  const completedTx = await prisma.transaction.findUnique({
+    where: { reference: `FIN_${reference}` },
+    select: { status: true },
+  });
+
+  if (completedTx) {
+    return { status: "success" };
+  }
+
+  // FIN_ record doesn't exist yet — verify directly with Paystack now.
+  // This handles the case where the browser was closed before Paystack
+  // redirected to our callback URL.
+  try {
+    const result = await verifyAndCompleteTransaction(reference);
+    if (result.status === "success" || result.status === "already_processed") {
+      return { status: "success" };
+    }
+  } catch {
+    // Payment not successful yet or Paystack returned failure
+  }
+
+  return { status: "pending" };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Webhook & Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const handleWebhook = async (event: string, data: any) => {
   if (event === "charge.success") {
-    // data.id is the Paystack internal transaction ID
     await verifyAndCompleteTransaction(data.id);
   }
 };

@@ -6,15 +6,6 @@ import { ok, created, asyncHandler } from "../utils";
 
 const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
 
-// ── Create Order ──────────────────────────────────────────────────────────────
-// Called by the frontend AFTER Paystack confirms payment success.
-// Verifies the reference hasn't already been used, creates the order,
-// clears the cart, and sends notifications.
-export const createOrder = asyncHandler(async (req: Request, res: Response) => {
-  const result = await orderService.createOrder(uid(req), req.body);
-  created(res, result, "Order placed successfully.");
-});
-
 export const getTracking = asyncHandler(async (req: Request, res: Response) => {
   ok(res, await orderService.getOrderTracking(uid(req), req.params.id));
 });

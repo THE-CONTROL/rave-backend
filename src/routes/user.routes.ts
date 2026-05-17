@@ -61,7 +61,7 @@ router.post(
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 // Create order — only called after frontend confirms payment success
-router.post("/orders", validate(v.createOrderSchema), orderCtrl.createOrder);
+router.post("/orders", validate(v.createOrderSchema), ctrl.createOrder);
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 router.get("/orders", ctrl.getOrders);

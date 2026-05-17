@@ -8,6 +8,7 @@ import { UserNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import * as paymentService from "../services/payment.service";
+import { PaymentMethod } from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile Completion
@@ -262,7 +263,7 @@ export const getOrderById = async (userId: string, orderId: string) => {
           menuItem: {
             include: {
               images: true,
-              ingredients: true, // ← needed to resolve extras IDs → name + price
+              ingredients: true,
             },
           },
         },
@@ -299,7 +300,6 @@ export const getOrderById = async (userId: string, orderId: string) => {
   return {
     ...order,
     items: order.items.map((item) => {
-      // Resolve extras IDs → full ingredient objects
       const rawExtras = item.extras;
       const extrasIds: string[] = Array.isArray(rawExtras)
         ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
@@ -320,7 +320,7 @@ export const getOrderById = async (userId: string, orderId: string) => {
       return {
         ...item,
         menuItem: item.menuItem,
-        resolvedExtras, // [{ id, name, price }] — ready for display
+        resolvedExtras,
         extrasTotal: resolvedExtras.reduce((sum, e) => sum + e.price, 0),
       };
     }),
@@ -343,6 +343,105 @@ export const getOrderById = async (userId: string, orderId: string) => {
       lng: order.vendor.lng ?? null,
     },
   };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Create Order — called AFTER payment is confirmed by polling
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CreateOrderInput {
+  savedLocationId: string;
+  paymentMethod: string;
+  instructions?: string;
+  contactMethod?: string;
+  reference: string; // Paystack reference — stored as evidence
+}
+
+export const createOrder = async (
+  userId: string,
+  dto: CreateOrderInput,
+): Promise<{ orderId: string }> => {
+  // ── Idempotency: prevent duplicate orders for the same payment ─────────────
+  const existingOrder = await prisma.order.findFirst({
+    where: { evidenceUrl: dto.reference },
+    select: { orderId: true },
+  });
+  if (existingOrder) {
+    // Already created — return the existing order (safe to call multiple times)
+    return { orderId: existingOrder.orderId };
+  }
+
+  const { items, summary } = await getCart(userId);
+  if (!items.length || !summary) {
+    throw AppError.badRequest("Cart is empty. Cannot create order.");
+  }
+
+  const loc = await prisma.savedLocation.findFirst({
+    where: { id: dto.savedLocationId, userId },
+  });
+  if (!loc) throw AppError.notFound("Saved location");
+
+  const vendorId = items[0].menuItem.vendorId;
+
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: vendorId },
+    select: { autoAcceptOrders: true },
+  });
+
+  const initialStatus = vendor?.autoAcceptOrders ? "preparing" : "new";
+  const etaMinutes = 25;
+  const arrivalTime = new Date();
+  arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
+
+  const order = await prisma.order.create({
+    data: {
+      userId,
+      vendorId,
+      totalAmount: summary.total,
+      deliveryFee: summary.deliveryFee || 0,
+      vat: summary.vat || 0,
+      serviceFee: summary.serviceFee || 0,
+      discountAmount: summary.discountAmount || 0,
+      paymentMethod: dto.paymentMethod as PaymentMethod,
+      status: initialStatus,
+      estimatedArrival: arrivalTime,
+      etaDuration: etaMinutes,
+      evidenceUrl: dto.reference, // ← Paystack reference as evidence
+      deliveryAddress: loc.description,
+      deliveryLat: loc.latitude,
+      deliveryLng: loc.longitude,
+      deliveryInstructions: dto.instructions ?? loc.instructions,
+      contactMethod: dto.contactMethod ?? "in-app",
+      items: {
+        create: items.map((item) => ({
+          menuItemId: item.menuItem.id,
+          name: item.menuItem.name,
+          qty: item.qty,
+          price: item.currentPrice,
+          extras: item.extras ?? [],
+        })),
+      },
+    },
+  });
+
+  // Clear cart now that order is created
+  await prisma.cartItem.deleteMany({ where: { userId } });
+
+  // Link the FIN_ transaction to this order if it exists
+  await prisma.transaction.updateMany({
+    where: {
+      reference: `FIN_${dto.reference}`,
+      orderId: null,
+    },
+    data: { orderId: order.id },
+  });
+
+  const itemsSummary = items
+    .map((i) => `${i.qty}x ${i.menuItem.name}`)
+    .join(", ");
+  notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, summary.total);
+
+  return { orderId: order.orderId };
 };
 
 export const applyPromoCode = async (
@@ -428,7 +527,6 @@ export const processCheckout = async (
 
   const vendorId = items[0].menuItem.vendorId;
 
-  // ── Check auto-accept ───────────────────────────────────────────────────
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
     select: { autoAcceptOrders: true },
@@ -466,7 +564,7 @@ export const processCheckout = async (
             name: item.menuItem.name,
             qty: item.qty,
             price: item.currentPrice,
-            extras: item.extras ?? [], // ← add this
+            extras: item.extras ?? [],
           })),
         },
       },
@@ -529,15 +627,13 @@ export const getCart = async (userId: string) => {
     },
   });
 
-  // ── Running totals (all per final qty) ───────────────────────────────────
-  let runningBaseSubtotal = 0; // sum of (basePrice × qty) before discount
-  let runningExtrasTotal = 0; // sum of (extrasPrice × qty)
-  let runningDiscountTotal = 0; // sum of discount savings on base price
+  let runningBaseSubtotal = 0;
+  let runningExtrasTotal = 0;
+  let runningDiscountTotal = 0;
 
   const mappedItems = cartItems.map((item) => {
     const basePrice = item.menuItem.price;
 
-    // ── Resolve selected extras ─────────────────────────────────────────────
     const extras = item.extras as any;
     let extrasPrice = 0;
     const selectedExtras: { id: string; name: string; price: number }[] = [];
@@ -551,14 +647,13 @@ export const getCart = async (userId: string) => {
 
       for (const ing of item.menuItem.ingredients) {
         if (ing.isOptional && selectedIds.includes(ing.id)) {
-          const ingPrice = ing.price ?? 0; // null guard
+          const ingPrice = ing.price ?? 0;
           extrasPrice += ingPrice;
           selectedExtras.push({ id: ing.id, name: ing.name, price: ingPrice });
         }
       }
     }
 
-    // ── Resolve applicable promotion ────────────────────────────────────────
     const promo = activePromos.find(
       (p) => p.appliesTo === "all" || p.productIds.includes(item.menuItemId),
     );
@@ -568,22 +663,18 @@ export const getCart = async (userId: string) => {
 
     if (promo && promo.discountValue) {
       if (promo.type === "percentage_discount") {
-        // Discount applies to base price only (not extras)
         discountPerUnit = basePrice * (promo.discountValue / 100);
         discountLabel = `${promo.discountValue}% off`;
       } else if (promo.type === "fixed_discount") {
-        // Cap discount at basePrice so it can't go negative
         discountPerUnit = Math.min(promo.discountValue, basePrice);
         discountLabel = `₦${promo.discountValue} off`;
       }
     }
 
-    // ── Per-unit prices ─────────────────────────────────────────────────────
-    const originalUnitPrice = basePrice + extrasPrice; // no discount
+    const originalUnitPrice = basePrice + extrasPrice;
     const discountedBasePrice = basePrice - discountPerUnit;
-    const currentUnitPrice = discountedBasePrice + extrasPrice; // after discount
+    const currentUnitPrice = discountedBasePrice + extrasPrice;
 
-    // ── Per-item totals (× qty) ─────────────────────────────────────────────
     const baseSubtotalForItem = basePrice * item.qty;
     const extrasTotalForItem = extrasPrice * item.qty;
     const discountForItem = discountPerUnit * item.qty;
@@ -597,10 +688,10 @@ export const getCart = async (userId: string) => {
       qty: item.qty,
       extras: item.extras,
       selectedExtras,
-      extrasPrice, // per unit, for display in card
+      extrasPrice,
       discountLabel,
-      originalPrice: originalUnitPrice, // base + extras, no discount
-      currentPrice: currentUnitPrice, // discounted base + extras
+      originalPrice: originalUnitPrice,
+      currentPrice: currentUnitPrice,
       menuItem: {
         id: item.menuItem.id,
         name: item.menuItem.name,
@@ -609,13 +700,12 @@ export const getCart = async (userId: string) => {
         images: item.menuItem.images.map((img) => ({
           url: img.url,
           isMain: img.isMain,
-          main: img.isMain, // both shapes for component compatibility
+          main: img.isMain,
         })),
       },
     };
   });
 
-  // ── Fee config ─────────────────────────────────────────────────────────────
   const {
     vatRate: getVatRate,
     serviceFee: getServiceFee,
@@ -626,17 +716,6 @@ export const getCart = async (userId: string) => {
   const serviceFee = await getServiceFee();
   const deliveryBase = await getDeliveryBase();
 
-  // ── Final calculation ──────────────────────────────────────────────────────
-  //
-  //  subtotal       = sum of base prices (before discount, before extras)
-  //  extrasTotal    = sum of all add-on prices
-  //  discountAmount = sum of all promotional savings (on base only)
-  //
-  //  discountedBase = subtotal - discountAmount
-  //  taxableAmount  = discountedBase + extrasTotal   (what VAT applies to)
-  //  vat            = taxableAmount × vatRate
-  //  total          = taxableAmount + vat + serviceFee + deliveryBase
-
   const taxableAmount =
     runningBaseSubtotal - runningDiscountTotal + runningExtrasTotal;
   const vatAmount = taxableAmount * vatRate;
@@ -645,10 +724,10 @@ export const getCart = async (userId: string) => {
   return {
     items: mappedItems,
     summary: {
-      subtotal: runningBaseSubtotal, // base prices before discount
-      extrasTotal: runningExtrasTotal, // add-ons total
-      discountAmount: runningDiscountTotal, // total savings
-      taxableAmount, // what's actually being charged before fees
+      subtotal: runningBaseSubtotal,
+      extrasTotal: runningExtrasTotal,
+      discountAmount: runningDiscountTotal,
+      taxableAmount,
       vat: vatAmount,
       serviceFee,
       deliveryFee: deliveryBase,
@@ -662,7 +741,7 @@ export const addToCart = async (
   userId: string,
   menuItemId: string,
   qty: number,
-  extras?: string[], // array of selected ingredient IDs
+  extras?: string[],
 ): Promise<void> => {
   const item = await prisma.menuItem.findUnique({ where: { id: menuItemId } });
   if (!item || !item.isActive) throw AppError.notFound("Menu item");
@@ -683,11 +762,10 @@ export const addToCart = async (
       userId,
       menuItemId,
       qty,
-      extras: extras ?? [], // store as JSON array of IDs
+      extras: extras ?? [],
     },
     update: {
       qty: { increment: qty },
-      // Overwrite extras on re-add so the latest selection wins
       ...(extras !== undefined ? { extras } : {}),
     },
   });
@@ -1042,7 +1120,6 @@ export const toggleFavoriteProduct = async (
     return { isFavorite: false };
   }
 
-  // Look up vendorId from the menu item — don't trust the client to send it
   const menuItem = await prisma.menuItem.findUniqueOrThrow({
     where: { id: menuItemId },
     select: { vendorId: true },
@@ -1167,10 +1244,7 @@ export const getFavoriteRestaurants = async (
       };
     });
 
-  return {
-    data,
-    meta: buildMeta(total, page, limit),
-  };
+  return { data, meta: buildMeta(total, page, limit) };
 };
 
 export const getFavoriteProducts = async (
@@ -1241,18 +1315,12 @@ export const getFavoriteProducts = async (
       averageRating: f.menuItem.vendor.averageRating,
     },
     categories: f.menuItem.categories.map((c) => ({
-      category: {
-        id: c.category.id,
-        name: c.category.name,
-      },
+      category: { id: c.category.id, name: c.category.name },
     })),
     customGroups: [],
   }));
 
-  return {
-    data,
-    meta: buildMeta(total, page, limit),
-  };
+  return { data, meta: buildMeta(total, page, limit) };
 };
 
 export const getRiderLocationForOrder = async (
