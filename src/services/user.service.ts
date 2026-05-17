@@ -623,6 +623,7 @@ export const addToCart = async (
   userId: string,
   menuItemId: string,
   qty: number,
+  extras?: string[], // array of selected ingredient IDs
 ): Promise<void> => {
   const item = await prisma.menuItem.findUnique({ where: { id: menuItemId } });
   if (!item || !item.isActive) throw AppError.notFound("Menu item");
@@ -639,8 +640,17 @@ export const addToCart = async (
 
   await prisma.cartItem.upsert({
     where: { userId_menuItemId: { userId, menuItemId } },
-    create: { userId, menuItemId, qty },
-    update: { qty: { increment: qty } },
+    create: {
+      userId,
+      menuItemId,
+      qty,
+      extras: extras ?? [], // store as JSON array of IDs
+    },
+    update: {
+      qty: { increment: qty },
+      // Overwrite extras on re-add so the latest selection wins
+      ...(extras !== undefined ? { extras } : {}),
+    },
   });
 };
 
@@ -648,6 +658,7 @@ export const updateCartItem = async (
   userId: string,
   menuItemId: string,
   qty: number,
+  extras?: string[],
 ): Promise<void> => {
   if (qty <= 0) {
     await prisma.cartItem.deleteMany({ where: { userId, menuItemId } });
@@ -655,8 +666,16 @@ export const updateCartItem = async (
   }
   await prisma.cartItem.upsert({
     where: { userId_menuItemId: { userId, menuItemId } },
-    create: { userId, menuItemId, qty },
-    update: { qty },
+    create: {
+      userId,
+      menuItemId,
+      qty,
+      extras: extras ?? [],
+    },
+    update: {
+      qty,
+      ...(extras !== undefined ? { extras } : {}),
+    },
   });
 };
 

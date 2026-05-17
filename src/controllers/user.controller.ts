@@ -78,7 +78,12 @@ export const getCart = asyncHandler(async (req, res) => {
 });
 
 export const addToCart = asyncHandler(async (req, res) => {
-  await userService.addToCart(uid(req), req.body.menuItemId, req.body.qty);
+  await userService.addToCart(
+    uid(req),
+    req.body.menuItemId,
+    req.body.qty,
+    req.body.extras, // ← forward extras
+  );
   ok(res, null, "Item added to cart.");
 });
 
@@ -87,6 +92,7 @@ export const updateCartItem = asyncHandler(async (req, res) => {
     uid(req),
     req.params.menuItemId,
     req.body.qty,
+    req.body.extras, // ← forward extras
   );
   ok(res, null, "Cart updated.");
 });

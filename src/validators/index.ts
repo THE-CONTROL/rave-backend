@@ -111,10 +111,12 @@ export const locationSchema = z.object({
 export const addToCartSchema = z.object({
   menuItemId: z.string().uuid(),
   qty: z.number().int().positive().max(20),
+  extras: z.array(z.string().uuid()).optional(), // array of ingredient IDs
 });
 
 export const updateCartItemSchema = z.object({
   qty: z.number().int().min(0).max(20),
+  extras: z.array(z.string().uuid()).optional(),
 });
 
 export const checkoutSchema = z.object({
