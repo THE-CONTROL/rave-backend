@@ -466,6 +466,7 @@ export const processCheckout = async (
             name: item.menuItem.name,
             qty: item.qty,
             price: item.currentPrice,
+            extras: item.extras ?? [], // ← add this
           })),
         },
       },
