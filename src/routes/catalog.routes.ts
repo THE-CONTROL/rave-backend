@@ -8,7 +8,7 @@ const router = Router();
 // All catalog routes are public — auth is optional for isFavorite/isYourUsual state
 router.get("/restaurants", optionalAuth, ctrl.getNearbyRestaurants);
 router.get("/restaurants/:id", optionalAuth, ctrl.getRestaurantDetails);
-router.get("/restaurants/:id/menu", ctrl.getRestaurantMenu);
+router.get("/restaurants/:id/menu", optionalAuth, ctrl.getRestaurantMenu);
 router.get("/restaurants/:id/categories", ctrl.getRestaurantCategories);
 router.get("/restaurants/:id/reviews", ctrl.getRestaurantReviews);
 router.get("/restaurants/:id/rating-distribution", ctrl.getRatingDistribution);

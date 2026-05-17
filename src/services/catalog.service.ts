@@ -44,6 +44,8 @@ export const getRestaurantDetails = async (
   return { ...vendor, isFavorite };
 };
 
+// ── Backend: getRestaurantMenu ────────────────────────────────────────────────
+
 export const getRestaurantMenu = async (
   vendorId: string,
   query: PaginationQuery,
@@ -65,6 +67,18 @@ export const getRestaurantMenu = async (
 
   if (!vendor) throw AppError.notFound("Restaurant");
 
+  // ── Favorite item IDs for this user ──────────────────────────────────────
+  const favoriteItemIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteProduct.findMany({
+      where: { userId },
+      select: { menuItemId: true },
+    });
+    favs.forEach((f: { menuItemId: string }) =>
+      favoriteItemIds.add(f.menuItemId),
+    );
+  }
+
   const whereClause: any = {
     vendorId,
     isActive: true,
@@ -80,8 +94,6 @@ export const getRestaurantMenu = async (
         },
         images: true,
         ingredients: true,
-        // FIX: Safely conditionally include favorites
-        ...(userId ? { favorites: { where: { userId } } } : {}),
       },
       orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
       skip,
@@ -91,7 +103,6 @@ export const getRestaurantMenu = async (
   ]);
 
   const mappedItems = items.map((item: any) => {
-    // ── customGroups from optional ingredients grouped by mealType ────────
     const optionalIngredients = item.ingredients.filter(
       (ing: any) => ing.isOptional,
     );
@@ -107,7 +118,6 @@ export const getRestaurantMenu = async (
         title: mealType,
         type: "optional",
         required: false,
-        // Give TypeScript the exact structure of what an 'ing' is
         options: ings.map(
           (ing: { id: string; name: string; price: number | null }) => ({
             id: ing.id,
@@ -139,11 +149,10 @@ export const getRestaurantMenu = async (
         isOptional: ing.isOptional,
         price: ing.price ?? 0,
       })),
-      // Rating comes from the vendor's overall rating since
-      // MenuItem has no direct reviews relation
       rating: vendor.averageRating,
       reviewCount: 0,
-      isFavorite: item.favorites ? item.favorites.length > 0 : false,
+      // ── Set.has() — consistent with all other services ──
+      isFavorite: favoriteItemIds.has(item.id),
       vendor: {
         id: vendor.id,
         storeName: vendor.storeName,
@@ -151,6 +160,8 @@ export const getRestaurantMenu = async (
         isOpen: vendor.isOpen,
         averageRating: vendor.averageRating,
       },
+      // ── "categories" is the field name used in the map ──
+      // The frontend must filter on item.categories, not item.vendorCategories
       categories: item.categories.map((c: any) => ({
         category: {
           id: c.category.id,
