@@ -469,7 +469,7 @@ export const getCart = async (userId: string) => {
       menuItem: {
         include: {
           images: { orderBy: { isMain: "desc" } },
-          ingredients: true, // ← fetch ingredients so we can price extras
+          ingredients: true,
         },
       },
     },
@@ -490,15 +490,15 @@ export const getCart = async (userId: string) => {
     },
   });
 
-  let runningSubtotal = 0;
-  let runningDiscountTotal = 0;
+  // ── Running totals (all per final qty) ───────────────────────────────────
+  let runningBaseSubtotal = 0; // sum of (basePrice × qty) before discount
+  let runningExtrasTotal = 0; // sum of (extrasPrice × qty)
+  let runningDiscountTotal = 0; // sum of discount savings on base price
 
   const mappedItems = cartItems.map((item) => {
     const basePrice = item.menuItem.price;
 
-    // ── Calculate extras price ────────────────────────────────────────────
-    // extras is stored as JSON: { ingredientId: true, ... } or string[]
-    // Support both shapes defensively
+    // ── Resolve selected extras ─────────────────────────────────────────────
     const extras = item.extras as any;
     let extrasPrice = 0;
     const selectedExtras: { id: string; name: string; price: number }[] = [];
@@ -512,49 +512,55 @@ export const getCart = async (userId: string) => {
 
       for (const ing of item.menuItem.ingredients) {
         if (ing.isOptional && selectedIds.includes(ing.id)) {
-          extrasPrice += ing.price;
-          selectedExtras.push({ id: ing.id, name: ing.name, price: ing.price });
+          const ingPrice = ing.price ?? 0; // null guard
+          extrasPrice += ingPrice;
+          selectedExtras.push({ id: ing.id, name: ing.name, price: ingPrice });
         }
       }
     }
 
-    // ── Base price + extras per unit ──────────────────────────────────────
-    const unitPrice = basePrice + extrasPrice;
-    const itemSubtotal = unitPrice * item.qty;
-
-    // ── Apply promotions (on base price only, not extras) ─────────────────
+    // ── Resolve applicable promotion ────────────────────────────────────────
     const promo = activePromos.find(
       (p) => p.appliesTo === "all" || p.productIds.includes(item.menuItemId),
     );
 
-    let discountedBasePrice = basePrice;
-    let discountLabel = null;
+    let discountPerUnit = 0;
+    let discountLabel: string | null = null;
 
     if (promo && promo.discountValue) {
       if (promo.type === "percentage_discount") {
+        // Discount applies to base price only (not extras)
+        discountPerUnit = basePrice * (promo.discountValue / 100);
         discountLabel = `${promo.discountValue}% off`;
-        discountedBasePrice = basePrice * (1 - promo.discountValue / 100);
       } else if (promo.type === "fixed_discount") {
+        // Cap discount at basePrice so it can't go negative
+        discountPerUnit = Math.min(promo.discountValue, basePrice);
         discountLabel = `₦${promo.discountValue} off`;
-        discountedBasePrice = Math.max(0, basePrice - promo.discountValue);
       }
     }
 
-    const currentUnitPrice = discountedBasePrice + extrasPrice;
-    const itemFinalPrice = currentUnitPrice * item.qty;
-    const originalSubtotal = unitPrice * item.qty;
+    // ── Per-unit prices ─────────────────────────────────────────────────────
+    const originalUnitPrice = basePrice + extrasPrice; // no discount
+    const discountedBasePrice = basePrice - discountPerUnit;
+    const currentUnitPrice = discountedBasePrice + extrasPrice; // after discount
 
-    runningSubtotal += originalSubtotal;
-    runningDiscountTotal += originalSubtotal - itemFinalPrice;
+    // ── Per-item totals (× qty) ─────────────────────────────────────────────
+    const baseSubtotalForItem = basePrice * item.qty;
+    const extrasTotalForItem = extrasPrice * item.qty;
+    const discountForItem = discountPerUnit * item.qty;
+
+    runningBaseSubtotal += baseSubtotalForItem;
+    runningExtrasTotal += extrasTotalForItem;
+    runningDiscountTotal += discountForItem;
 
     return {
       id: item.id,
       qty: item.qty,
       extras: item.extras,
       selectedExtras,
-      extrasPrice,
+      extrasPrice, // per unit, for display in card
       discountLabel,
-      originalPrice: unitPrice, // base + extras
+      originalPrice: originalUnitPrice, // base + extras, no discount
       currentPrice: currentUnitPrice, // discounted base + extras
       menuItem: {
         id: item.menuItem.id,
@@ -563,12 +569,14 @@ export const getCart = async (userId: string) => {
         vendorId: item.menuItem.vendorId,
         images: item.menuItem.images.map((img) => ({
           url: img.url,
-          main: img.isMain,
+          isMain: img.isMain,
+          main: img.isMain, // both shapes for component compatibility
         })),
       },
     };
   });
 
+  // ── Fee config ─────────────────────────────────────────────────────────────
   const {
     vatRate: getVatRate,
     serviceFee: getServiceFee,
@@ -578,20 +586,35 @@ export const getCart = async (userId: string) => {
   const vatRate = await getVatRate();
   const serviceFee = await getServiceFee();
   const deliveryBase = await getDeliveryBase();
-  const baseTotal = runningSubtotal - runningDiscountTotal;
-  const vatAmount = baseTotal * vatRate;
-  const finalTotal = baseTotal + vatAmount + serviceFee + deliveryBase;
+
+  // ── Final calculation ──────────────────────────────────────────────────────
+  //
+  //  subtotal       = sum of base prices (before discount, before extras)
+  //  extrasTotal    = sum of all add-on prices
+  //  discountAmount = sum of all promotional savings (on base only)
+  //
+  //  discountedBase = subtotal - discountAmount
+  //  taxableAmount  = discountedBase + extrasTotal   (what VAT applies to)
+  //  vat            = taxableAmount × vatRate
+  //  total          = taxableAmount + vat + serviceFee + deliveryBase
+
+  const taxableAmount =
+    runningBaseSubtotal - runningDiscountTotal + runningExtrasTotal;
+  const vatAmount = taxableAmount * vatRate;
+  const finalTotal = taxableAmount + vatAmount + serviceFee + deliveryBase;
 
   return {
     items: mappedItems,
     summary: {
-      subtotal: runningSubtotal,
-      discountAmount: runningDiscountTotal,
+      subtotal: runningBaseSubtotal, // base prices before discount
+      extrasTotal: runningExtrasTotal, // add-ons total
+      discountAmount: runningDiscountTotal, // total savings
+      taxableAmount, // what's actually being charged before fees
       vat: vatAmount,
-      total: finalTotal,
-      itemCount: mappedItems.length,
       serviceFee,
       deliveryBase,
+      total: finalTotal,
+      itemCount: mappedItems.length,
     },
   };
 };
@@ -792,8 +815,8 @@ export const requestRefund = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getReferralStats = async (
-  userId: string, 
-  query: PaginationQuery = {}
+  userId: string,
+  query: PaginationQuery = {},
 ) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -803,21 +826,24 @@ export const getReferralStats = async (
 
   const { page, limit, skip } = parsePagination(query);
 
-  const [referrals, totalReferrals, totalEarned, pendingReferrals] = await Promise.all([
-    prisma.referral.findMany({
-      where: { referrerId: userId },
-      include: { referee: { select: { fullName: true, imageUrl: true } } },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take: limit,
-    }),
-    prisma.referral.count({ where: { referrerId: userId } }),
-    prisma.transaction.aggregate({
-      where: { userId, type: "referral", status: "completed" },
-      _sum: { amount: true },
-    }),
-    prisma.referral.count({ where: { referrerId: userId, status: "pending" } })
-  ]);
+  const [referrals, totalReferrals, totalEarned, pendingReferrals] =
+    await Promise.all([
+      prisma.referral.findMany({
+        where: { referrerId: userId },
+        include: { referee: { select: { fullName: true, imageUrl: true } } },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.referral.count({ where: { referrerId: userId } }),
+      prisma.transaction.aggregate({
+        where: { userId, type: "referral", status: "completed" },
+        _sum: { amount: true },
+      }),
+      prisma.referral.count({
+        where: { referrerId: userId, status: "pending" },
+      }),
+    ]);
 
   return {
     referralCode: user.referralCode,
@@ -1045,8 +1071,8 @@ export const getUsualOrders = async (userId: string) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getFavoriteRestaurants = async (
-  userId: string, 
-  query: PaginationQuery = {}
+  userId: string,
+  query: PaginationQuery = {},
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
@@ -1058,7 +1084,7 @@ export const getFavoriteRestaurants = async (
       skip,
       take: limit,
     }),
-    prisma.favoriteRestaurant.count({ where: { userId } })
+    prisma.favoriteRestaurant.count({ where: { userId } }),
   ]);
 
   const data = favorites
@@ -1090,8 +1116,8 @@ export const getFavoriteRestaurants = async (
 };
 
 export const getFavoriteProducts = async (
-  userId: string, 
-  query: PaginationQuery = {}
+  userId: string,
+  query: PaginationQuery = {},
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
@@ -1122,7 +1148,7 @@ export const getFavoriteProducts = async (
       skip,
       take: limit,
     }),
-    prisma.favoriteProduct.count({ where: { userId } })
+    prisma.favoriteProduct.count({ where: { userId } }),
   ]);
 
   const data = favorites.map((f) => ({
