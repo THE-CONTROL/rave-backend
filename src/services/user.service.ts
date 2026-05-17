@@ -226,7 +226,21 @@ export const getOrders = async (
     prisma.order.findMany({
       where,
       include: {
-        items: true,
+        items: {
+          include: {
+            menuItem: {
+              select: {
+                id: true,
+                name: true,
+                images: {
+                  where: { isMain: true },
+                  take: 1,
+                  select: { url: true },
+                },
+              },
+            },
+          },
+        },
         vendor: { select: { storeName: true, logoUrl: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -235,6 +249,7 @@ export const getOrders = async (
     }),
     prisma.order.count({ where }),
   ]);
+
   return { orders, meta: buildMeta(total, page, limit) };
 };
 
@@ -247,6 +262,7 @@ export const getOrderById = async (userId: string, orderId: string) => {
           menuItem: {
             include: {
               images: true,
+              ingredients: true, // ← needed to resolve extras IDs → name + price
             },
           },
         },
@@ -282,10 +298,32 @@ export const getOrderById = async (userId: string, orderId: string) => {
 
   return {
     ...order,
-    items: order.items.map((item) => ({
-      ...item,
-      menuItem: item.menuItem,
-    })),
+    items: order.items.map((item) => {
+      // Resolve extras IDs → full ingredient objects
+      const rawExtras = item.extras;
+      const extrasIds: string[] = Array.isArray(rawExtras)
+        ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
+        : rawExtras !== null && typeof rawExtras === "object"
+          ? Object.keys(rawExtras as Record<string, unknown>).filter(
+              (k) => (rawExtras as Record<string, unknown>)[k] === true,
+            )
+          : [];
+
+      const resolvedExtras = item.menuItem.ingredients
+        .filter((ing) => extrasIds.includes(ing.id))
+        .map((ing) => ({
+          id: ing.id,
+          name: ing.name,
+          price: ing.price ?? 0,
+        }));
+
+      return {
+        ...item,
+        menuItem: item.menuItem,
+        resolvedExtras, // [{ id, name, price }] — ready for display
+        extrasTotal: resolvedExtras.reduce((sum, e) => sum + e.price, 0),
+      };
+    }),
     deliveryInstructions: order.deliveryInstructions,
     contactMethod: order.contactMethod ?? "in-app",
     rider: rider
