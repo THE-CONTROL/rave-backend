@@ -99,7 +99,7 @@ export const initializePayment = async (
     "order",
     vendorId,
     userId,
-    "",
+    undefined,
   );
 
   return {
