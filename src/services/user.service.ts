@@ -408,7 +408,7 @@ export const processCheckout = async (
         userId,
         vendorId,
         totalAmount: summary.total,
-        deliveryFee: summary.deliveryBase || 0,
+        deliveryFee: summary.deliveryFee || 0,
         vat: summary.vat || 0,
         serviceFee: summary.serviceFee || 0,
         discountAmount: summary.discountAmount || 0,
@@ -612,7 +612,7 @@ export const getCart = async (userId: string) => {
       taxableAmount, // what's actually being charged before fees
       vat: vatAmount,
       serviceFee,
-      deliveryBase,
+      deliveryFee: deliveryBase,
       total: finalTotal,
       itemCount: mappedItems.length,
     },
