@@ -394,6 +394,18 @@ export const getItemsByCategory = async (
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
+  // ── User's favorite item IDs ──
+  const favoriteItemIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteProduct.findMany({
+      where: { userId },
+      select: { menuItemId: true },
+    });
+    favs.forEach((f: { menuItemId: string }) =>
+      favoriteItemIds.add(f.menuItemId),
+    );
+  }
+
   const where = {
     isActive: true,
     categories: {
@@ -421,8 +433,6 @@ export const getItemsByCategory = async (
       include: {
         vendor: { select: { id: true, storeName: true, logoUrl: true } },
         images: { select: { id: true, url: true, isMain: true } },
-        // Conditionally include favorites exactly as the guide does
-        ...(userId ? { favorites: { where: { userId } } } : {}),
       },
       orderBy: [{ isBestSeller: "desc" }, { name: "asc" }],
       skip,
@@ -432,9 +442,9 @@ export const getItemsByCategory = async (
   ]);
 
   return {
-    items: items.map((item: any) => ({
+    items: items.map((item) => ({
       ...item,
-      isFavorite: item.favorites ? item.favorites.length > 0 : false,
+      isFavorite: favoriteItemIds.has(item.id),
     })),
     meta: buildMeta(total, page, limit),
   };
@@ -515,6 +525,18 @@ export const getNearbyRestaurants = async (
     usualOrders.forEach((o) => usualVendorIds.add(o.vendorId));
   }
 
+  // ── User's favorite vendors ────────────────────────────────────────────────
+  const favoriteVendorIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteRestaurant.findMany({
+      where: { userId },
+      select: { vendorId: true },
+    });
+    favs.forEach((f: { vendorId: string }) =>
+      favoriteVendorIds.add(f.vendorId),
+    );
+  }
+
   // ── Build filter where clause ──────────────────────────────────────────────
   const where: any = {
     ...(query.isOpen === "true" ? { isOpen: true } : {}),
@@ -553,7 +575,6 @@ export const getNearbyRestaurants = async (
         )
       : withDistance;
 
-  // Sort: Nearest first, then best rated
   const sorted = filtered.sort((a, b) => {
     if (
       a.distanceKm !== null &&
@@ -587,6 +608,7 @@ export const getNearbyRestaurants = async (
       positiveReviews: v.positiveReviews,
       closesIn: v.hoursSummary,
       isYourUsual: usualVendorIds.has(v.id),
+      isFavorite: favoriteVendorIds.has(v.id),
     })),
     meta: buildMeta(total, page, limit),
   };
