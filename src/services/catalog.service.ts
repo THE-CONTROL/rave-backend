@@ -390,8 +390,21 @@ export const getItemsByCategory = async (
     maxPrice?: string;
     isBestSeller?: string;
   },
+  userId?: string | null,
 ) => {
   const { page, limit, skip } = parsePagination(query);
+
+  // Fetch user's favorited item IDs upfront
+  const userFavoriteItemIds = new Set<string>();
+  if (userId) {
+    const favs = await prisma.favoriteProduct.findMany({
+      where: { userId },
+      select: { menuItemId: true },
+    });
+    favs.forEach((f: { menuItemId: string }) =>
+      userFavoriteItemIds.add(f.menuItemId),
+    );
+  }
 
   const where = {
     isActive: true,
@@ -428,7 +441,13 @@ export const getItemsByCategory = async (
     prisma.menuItem.count({ where }),
   ]);
 
-  return { items, meta: buildMeta(total, page, limit) };
+  return {
+    items: items.map((item) => ({
+      ...item,
+      isFavorite: userFavoriteItemIds.has(item.id),
+    })),
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
