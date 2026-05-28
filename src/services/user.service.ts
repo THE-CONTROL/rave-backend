@@ -784,7 +784,8 @@ export const processCheckout = async (
   // ── Re-check vendor availability at payment time ───────────────────────────
   // The vendor may have closed between adding to cart and checking out.
   // Block before taking payment, not after.
-  if (!vendor || vendor.storeStatus !== "open" || !vendor.isOpen) {
+  // if (!vendor || vendor.storeStatus !== "open" || !vendor.isOpen) {
+  if (!vendor || !vendor.isOpen) {
     throw AppError.badRequest(
       `${vendor?.storeName ?? "This restaurant"} is now closed and isn't accepting orders. You have not been charged.`,
     );
@@ -1063,7 +1064,8 @@ export const addToCart = async (
   // ── Reject if the vendor is closed or not currently accepting orders ───────
   // storeStatus must be "open" (not paused/deactivated/under_review/denied),
   // AND the vendor's manual open toggle must be on.
-  if (item.vendor.storeStatus !== "open" || !item.vendor.isOpen) {
+  // if (item.vendor.storeStatus !== "open" || !item.vendor.isOpen) {
+  if (!item.vendor.isOpen) {
     throw AppError.badRequest(
       `${item.vendor.storeName} is currently closed and isn't accepting orders right now.`,
     );

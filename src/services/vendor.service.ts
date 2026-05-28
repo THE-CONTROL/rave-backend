@@ -7,6 +7,7 @@ import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
 import { format } from "date-fns"; //
+import { th } from "date-fns/locale";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile
@@ -236,6 +237,10 @@ export const toggleStoreOpen = async (
   userId: string,
 ): Promise<{ isOpen: boolean }> => {
   const vendor = await _requireVendor(userId);
+
+  // if (vendor.storeStatus !== "open") {
+  //   throw AppError.badRequest("Only activated stores can be opened.");
+  // }
   const updated = await prisma.vendorProfile.update({
     where: { id: vendor.id },
     data: { isOpen: !vendor.isOpen },
