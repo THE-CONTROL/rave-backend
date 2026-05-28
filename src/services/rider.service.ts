@@ -1263,8 +1263,9 @@ export const getRiderReviews = async (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Earnings / Transactions
+// Transactions
 // ─────────────────────────────────────────────────────────────────────────────
+
 export const getTransactions = async (
   userId: string,
   query: PaginationQuery & { type?: string },
@@ -1272,7 +1273,9 @@ export const getTransactions = async (
   const rider = await _requireRider(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  const validTypes = ["payment", "withdrawal"];
+  // Rider earnings are stored as type "payment"; refunds/adjustments as "refund".
+  // (There is no "withdrawal" enum value — payouts are tracked separately.)
+  const validTypes = ["payment", "refund", "referral"];
   const typeFilter =
     query.type && query.type !== "all" && validTypes.includes(query.type)
       ? (query.type as any)
@@ -1289,6 +1292,18 @@ export const getTransactions = async (
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
+      include: {
+        order: {
+          select: {
+            orderId: true,
+            deliveryAddress: true,
+            vendor: { select: { storeName: true } },
+            delivery: {
+              select: { distanceKm: true, etaMinutes: true },
+            },
+          },
+        },
+      },
     }),
     prisma.transaction.count({ where }),
   ]);
@@ -1303,6 +1318,18 @@ export const getTransactionById = async (userId: string, txId: string) => {
   const rider = await _requireRider(userId);
   const tx = await prisma.transaction.findFirst({
     where: { id: txId, riderId: rider.id },
+    include: {
+      order: {
+        select: {
+          orderId: true,
+          deliveryAddress: true,
+          vendor: { select: { storeName: true } },
+          delivery: {
+            select: { distanceKm: true, etaMinutes: true },
+          },
+        },
+      },
+    },
   });
   if (!tx) throw AppError.notFound("Transaction");
   return _formatTx(tx);
@@ -1461,23 +1488,49 @@ const _formatDelivery = (d: any) => ({
   etaMinutes: d.etaMinutes ?? 0,
 });
 
-const _formatTx = (tx: any) => ({
-  id: tx.id,
-  type: tx.type,
-  category: tx.category,
-  title: tx.title,
-  date: new Date(tx.createdAt).toLocaleDateString("en-US", {
+const _formatTx = (tx: any) => {
+  const isCredit = tx.type === "payment" || tx.type === "referral";
+  const created = new Date(tx.createdAt);
+
+  const date = created.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }),
-  time: new Date(tx.createdAt).toLocaleTimeString("en-US", {
+  });
+  const time = created.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
-  }),
-  amount: tx.amount,
-  status: tx.status,
-});
+  });
+
+  const delivery = tx.order?.delivery;
+
+  return {
+    id: tx.id,
+    type: tx.type,
+    status: tx.status,
+    title: tx.title,
+    amount: tx.amount,
+
+    // List card needs these
+    formattedAmount: `${isCredit ? "+" : "-"}₦${Math.abs(tx.amount).toLocaleString()}`,
+    formattedDate: date,
+    formattedTime: time,
+    date, // kept for backwards-compat with any screen reading .date/.time
+    time,
+    icon: isCredit ? "arrow-down" : "arrow-up",
+    iconBg: isCredit ? "#ECFDF5" : "#FEF3F2",
+
+    // Detail screen reads these — previously missing, so the UI showed
+    // hardcoded placeholder values on every receipt.
+    orderId: tx.order?.orderId ?? null,
+    pickupLocation: tx.order?.vendor?.storeName ?? null,
+    dropOffLocation: tx.order?.deliveryAddress ?? null,
+    distanceKm: delivery?.distanceKm ?? null,
+    durationMins: delivery?.etaMinutes ?? null,
+
+    reference: tx.reference ?? null,
+  };
+};
 
 const _dateLabel = (date: Date): string => {
   const now = new Date();

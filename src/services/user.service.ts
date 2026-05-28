@@ -161,23 +161,153 @@ export const deleteLocation = async (
 // Transactions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Maps a DB transaction (TransactionType enum: payment | order | refund | referral)
+ * to a UI-friendly object the frontend already expects:
+ *   payment  → "top_up"           (wallet funding)
+ *   order    → "order_payment"    (paid for an order)
+ *   refund   → "refund"
+ *   referral → "referral_reward"
+ *
+ * Adds the formatted strings, icon metadata, balance snapshots, and
+ * type-specific contextual fields (restaurant/itemsSummary/deliveryAddress
+ * for orders; referralName/remark for referrals; etc.) so the detail screen
+ * and the history list render without missing data.
+ */
+const UI_TYPE_MAP: Record<string, string> = {
+  payment: "top_up",
+  order: "order_payment",
+  refund: "refund",
+  referral: "referral_reward",
+};
+
+const ICON_META: Record<
+  string,
+  { icon: string; iconBg: string; isCredit: boolean }
+> = {
+  top_up: { icon: "arrow-down", iconBg: "#ECFDF5", isCredit: true },
+  order_payment: { icon: "arrow-up", iconBg: "#FEF3F2", isCredit: false },
+  refund: { icon: "arrow-down", iconBg: "#ECFDF5", isCredit: true },
+  referral_reward: { icon: "gift", iconBg: "#ECFDF5", isCredit: true },
+};
+
+const formatUserTransaction = (tx: any, extras?: any) => {
+  const uiType = UI_TYPE_MAP[tx.type] ?? tx.type;
+  const meta = ICON_META[uiType] ?? {
+    icon: "swap-horizontal",
+    iconBg: "#F2F4F7",
+    isCredit: false,
+  };
+
+  const signedAmount = meta.isCredit
+    ? Math.abs(tx.amount)
+    : -Math.abs(tx.amount);
+
+  const formattedDate = tx.createdAt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+  });
+  const formattedTime = tx.createdAt.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  // Per-type contextual fields the detail screen reads off the txn.
+  const ctx: Record<string, any> = {};
+
+  if (uiType === "order_payment" && extras?.order) {
+    const o = extras.order;
+    ctx.orderId = o.orderId ?? null;
+    ctx.restaurant = extras.vendorName ?? null;
+    ctx.itemsSummary = extras.itemsSummary ?? null;
+    ctx.paymentSource = tx.paymentMethod ?? "Card";
+    ctx.deliveryAddress = o.deliveryAddress ?? null;
+  }
+
+  if (uiType === "refund" && extras?.order) {
+    ctx.refundType = tx.title ?? "Refund";
+    ctx.orderId = extras.order.orderId ?? null;
+    ctx.refundedTo = tx.paymentMethod ?? "Original payment method";
+    ctx.reason = tx.reason ?? null;
+    ctx.deliveryAddress = extras.order.deliveryAddress ?? null;
+  }
+
+  if (uiType === "referral_reward") {
+    ctx.referralName = extras?.referralName ?? tx.customerName ?? null;
+    ctx.remark = tx.reason ?? tx.title ?? null;
+  }
+
+  if (uiType === "top_up") {
+    ctx.bankName = extras?.bankName ?? null;
+    ctx.senderName = extras?.senderName ?? tx.customerName ?? null;
+    ctx.senderAccount = extras?.senderAccount ?? null;
+  }
+
+  return {
+    id: tx.id,
+    type: uiType,
+    status: tx.status,
+    title: tx.title,
+    amount: signedAmount,
+    formattedAmount: `${meta.isCredit ? "+" : "-"}₦${Math.abs(tx.amount).toLocaleString()}`,
+    paymentMethod: tx.paymentMethod ?? null,
+    reference: tx.reference ?? null,
+    icon: meta.icon,
+    iconBg: meta.iconBg,
+
+    // Balance snapshots — kept on the row when the detail screen needs them.
+    // Falls back to 0 when not tracked (no wallet ledger column exists yet).
+    previousBalance: extras?.previousBalance ?? 0,
+    balanceAfter: extras?.balanceAfter ?? 0,
+
+    // Date strings the UI uses directly
+    date: formattedDate,
+    time: formattedTime,
+    formattedDate,
+    formattedTime,
+    createdAt: tx.createdAt,
+
+    // Linked order summary — the list card shows vendor + items inline
+    order: extras?.order
+      ? {
+          id: extras.order.id,
+          orderId: extras.order.orderId,
+          vendor: extras.vendorName ?? null,
+          vendorLogo: extras.vendorLogo ?? null,
+          items: extras.itemsSummary ?? null,
+          status: extras.order.status,
+        }
+      : null,
+
+    ...ctx,
+  };
+};
+
 export const getTransactions = async (
   userId: string,
   query: PaginationQuery & { type?: string },
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  const validTypes = [
-    "top_up",
-    "order_payment",
-    "refund",
-    "referral_bonus",
-    "withdrawal",
-    "payout",
-  ];
+  // Accept both the UI-friendly type names AND the DB enum names so the
+  // tab filter on the history screen ("Orders", "Refunds", "Referrals")
+  // doesn't have to know about the enum drift.
+  const FILTER_MAP: Record<string, string> = {
+    top_up: "payment",
+    order_payment: "order",
+    referral_reward: "referral",
+    refund: "refund",
+    payment: "payment",
+    order: "order",
+    referral: "referral",
+  };
+
+  const rawType = query.type;
   const typeFilter =
-    query.type && query.type !== "all" && validTypes.includes(query.type)
-      ? (query.type as any)
+    rawType && rawType !== "all" && FILTER_MAP[rawType]
+      ? (FILTER_MAP[rawType] as any)
       : undefined;
 
   const where = {
@@ -191,19 +321,84 @@ export const getTransactions = async (
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderId: true,
+            status: true,
+            deliveryAddress: true,
+            vendor: { select: { storeName: true, logoUrl: true } },
+            items: { select: { name: true, qty: true } },
+          },
+        },
+      },
     }),
     prisma.transaction.count({ where }),
   ]);
-  return { transactions, meta: buildMeta(total, page, limit) };
+
+  const formatted = transactions.map((tx: any) => {
+    const order = tx.order
+      ? {
+          id: tx.order.id,
+          orderId: tx.order.orderId,
+          status: tx.order.status,
+          deliveryAddress: tx.order.deliveryAddress,
+        }
+      : null;
+
+    const itemsSummary = tx.order?.items?.length
+      ? tx.order.items.map((i: any) => `${i.qty}x ${i.name}`).join(", ")
+      : null;
+
+    return formatUserTransaction(tx, {
+      order,
+      vendorName: tx.order?.vendor?.storeName ?? null,
+      vendorLogo: tx.order?.vendor?.logoUrl ?? null,
+      itemsSummary,
+    });
+  });
+
+  return { transactions: formatted, meta: buildMeta(total, page, limit) };
 };
 
 export const getTransactionById = async (userId: string, txId: string) => {
   const tx = await prisma.transaction.findFirst({
     where: { id: txId, userId },
-    include: { order: true },
+    include: {
+      order: {
+        select: {
+          id: true,
+          orderId: true,
+          status: true,
+          deliveryAddress: true,
+          vendor: { select: { storeName: true, logoUrl: true } },
+          items: { select: { name: true, qty: true } },
+        },
+      },
+    },
   });
   if (!tx) throw AppError.notFound("Transaction");
-  return tx;
+
+  const order = tx.order
+    ? {
+        id: tx.order.id,
+        orderId: tx.order.orderId,
+        status: tx.order.status,
+        deliveryAddress: tx.order.deliveryAddress,
+      }
+    : null;
+
+  const itemsSummary = tx.order?.items?.length
+    ? tx.order.items.map((i: any) => `${i.qty}x ${i.name}`).join(", ")
+    : null;
+
+  return formatUserTransaction(tx, {
+    order,
+    vendorName: tx.order?.vendor?.storeName ?? null,
+    vendorLogo: tx.order?.vendor?.logoUrl ?? null,
+    itemsSummary,
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +650,31 @@ export const applyPromoCode = async (
   message: string;
   promotionId?: string;
 }> => {
+  const result = await _evaluatePromo(code, subtotal, vendorId);
+
+  // Persist the code on the user only when it's valid, so getCart and
+  // checkout can re-evaluate it against the live cart.
+  if (result.valid) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { appliedPromoCode: code.trim().toUpperCase() },
+    });
+  }
+
+  return result;
+};
+
+// Pure evaluation — no persistence. Reused by getCart and checkout.
+const _evaluatePromo = async (
+  code: string,
+  subtotal: number,
+  vendorId: string,
+): Promise<{
+  valid: boolean;
+  discountAmount: number;
+  message: string;
+  promotionId?: string;
+}> => {
   const promo = await prisma.promotion.findFirst({
     where: {
       promoCode: code.trim().toUpperCase(),
@@ -498,6 +718,14 @@ export const applyPromoCode = async (
     promotionId: promo.id,
     message: `${promo.title} applied! You save ₦${discountAmount.toLocaleString()}.`,
   };
+};
+
+// Clear an applied promo code from the user's cart.
+export const removePromoCode = async (userId: string): Promise<void> => {
+  await prisma.user.update({
+    where: { id: userId },
+    data: { appliedPromoCode: null },
+  });
 };
 
 export const processCheckout = async (
@@ -547,7 +775,8 @@ export const processCheckout = async (
         deliveryFee: summary.deliveryFee || 0,
         vat: summary.vat || 0,
         serviceFee: summary.serviceFee || 0,
-        discountAmount: summary.discountAmount || 0,
+        discountAmount:
+          (summary.discountAmount || 0) + (summary.promoDiscount || 0),
         paymentMethod: dto.paymentMethod,
         status: initialStatus,
         estimatedArrival: arrivalTime,
@@ -580,6 +809,18 @@ export const processCheckout = async (
     userId,
     order.id,
   );
+
+  // Mark promo usage + clear the applied code now that it's consumed.
+  if (summary.promoCode) {
+    await prisma.promotion.updateMany({
+      where: { promoCode: summary.promoCode, vendorId },
+      data: { timesUsed: { increment: 1 } },
+    });
+  }
+  await prisma.user.update({
+    where: { id: userId },
+    data: { appliedPromoCode: null },
+  });
 
   await prisma.cartItem.deleteMany({ where: { userId } });
 
@@ -718,16 +959,54 @@ export const getCart = async (userId: string) => {
 
   const taxableAmount =
     runningBaseSubtotal - runningDiscountTotal + runningExtrasTotal;
-  const vatAmount = taxableAmount * vatRate;
-  const finalTotal = taxableAmount + vatAmount + serviceFee + deliveryBase;
+
+  // ── User-entered promo code (persisted on the user) ──────────────────────
+  // Auto-promos above already discounted individual items. The code promo
+  // applies on top, at the cart level, against the post-auto-discount subtotal.
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { appliedPromoCode: true },
+  });
+
+  let codeDiscount = 0;
+  let appliedPromo: { code: string; label: string } | null = null;
+
+  if (user?.appliedPromoCode) {
+    const evald = await _evaluatePromo(
+      user.appliedPromoCode,
+      taxableAmount,
+      vendorId,
+    );
+    if (evald.valid) {
+      codeDiscount = Math.min(evald.discountAmount, taxableAmount);
+      appliedPromo = {
+        code: user.appliedPromoCode,
+        label: `Promo ${user.appliedPromoCode}`,
+      };
+    } else {
+      // Code became invalid (expired, cart dropped below minimum, etc.)
+      // Clear it silently so the user isn't stuck with a dead code.
+      await prisma.user.update({
+        where: { id: userId },
+        data: { appliedPromoCode: null },
+      });
+    }
+  }
+
+  const discountedTaxable = taxableAmount - codeDiscount;
+  const vatAmount = discountedTaxable * vatRate;
+  const finalTotal = discountedTaxable + vatAmount + serviceFee + deliveryBase;
 
   return {
     items: mappedItems,
     summary: {
       subtotal: runningBaseSubtotal,
       extrasTotal: runningExtrasTotal,
-      discountAmount: runningDiscountTotal,
-      taxableAmount,
+      discountAmount: runningDiscountTotal, // auto-promo, per item
+      promoCode: appliedPromo?.code ?? null,
+      promoLabel: appliedPromo?.label ?? null,
+      promoDiscount: codeDiscount, // code-promo, cart level
+      taxableAmount: discountedTaxable,
       vat: vatAmount,
       serviceFee,
       deliveryFee: deliveryBase,

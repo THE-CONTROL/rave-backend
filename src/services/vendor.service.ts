@@ -672,7 +672,7 @@ export const getAnalytics = async (userId: string) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transactions / Earnings
+// Transactions
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getVendorTransactions = async (
@@ -682,9 +682,9 @@ export const getVendorTransactions = async (
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  // Expanded to include refund and order types based on design
-  const validTypes = ["payment", "withdrawal", "refund", "order"];
-
+  // Only enum-valid types. "withdrawal"/"payout" don't exist on TransactionType,
+  // so filtering by them previously returned an empty list silently.
+  const validTypes = ["payment", "order", "refund"];
   const typeFilter =
     query.type &&
     query.type !== "all" &&
@@ -707,14 +707,27 @@ export const getVendorTransactions = async (
     prisma.transaction.count({ where }),
   ]);
 
-  // We map the database records to the Transaction interface here
-  const formattedTransactions = transactions.map((tx: any) => ({
-    ...tx,
-    formattedAmount: `₦${tx.amount.toLocaleString()}`,
-    // Ensure colors match the UI design provided in images
-    iconBg:
-      tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
-  }));
+  const formattedTransactions = transactions.map((tx: any) => {
+    const isDebit = tx.type === "refund";
+    const created = new Date(tx.createdAt);
+    return {
+      ...tx,
+      // List card fields the shared component expects
+      formattedAmount: `${isDebit ? "-" : "+"}₦${Math.abs(tx.amount).toLocaleString()}`,
+      formattedDate: created.toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      }),
+      formattedTime: created.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      icon: isDebit ? "arrow-up" : "arrow-down",
+      iconBg: isDebit ? "#FEF3F2" : "#ECFDF5",
+    };
+  });
 
   return {
     transactions: formattedTransactions,
@@ -733,25 +746,53 @@ export const getVendorTransactionById = async (
       id: txId,
       vendorId: vendor.id,
     },
+    include: {
+      order: {
+        select: {
+          id: true, // UUID — used for routing to order details
+          orderId: true, // human-readable code (e.g. "cuid") — used for display
+          createdAt: true,
+          user: { select: { fullName: true } },
+        },
+      },
+    },
   });
 
   if (!tx) throw AppError.notFound("Transaction record not found");
 
-  // Logic to calculate fees/net if not already persisted in DB
+  const isRefund = tx.type === "refund";
+
+  // Fee/net breakdown — only meaningful for earnings, not refunds.
+  // amount is stored net (after the 10% platform fee), so gross = net / 0.9.
   const subtotal = tx.subtotal ?? tx.amount / 0.9;
-  const fee = tx.fee ?? subtotal * 0.1;
+  const fee = tx.fee ?? subtotal - tx.amount;
+
+  // Prefer the snapshotted customerName; fall back to the live order's user.
+  const customerName =
+    tx.customerName ?? tx.order?.user?.fullName ?? "Customer";
+
+  // Use the order's creation date for "Order Date" if available, else the tx date.
+  const orderDate = tx.order?.createdAt ?? tx.createdAt;
 
   return {
     ...tx,
+    isRefund,
+    customerName,
+
+    // Expose BOTH: routeOrderId (UUID) for navigation, displayOrderId (human) for UI.
+    // `orderId` itself stays the UUID for backwards-compat with existing routing.
+    orderId: tx.order?.id ?? tx.orderId,
+    routeOrderId: tx.order?.id ?? tx.orderId,
+    displayOrderId: tx.order?.orderId ?? tx.orderId,
+
     subtotal,
     fee,
-    // Formatting dates for the "Credited On" and "Order Date" rows
-    formattedDate: tx.createdAt.toLocaleDateString("en-US", {
+    formattedDate: orderDate.toLocaleDateString("en-US", {
       month: "short",
       day: "2-digit",
       year: "numeric",
     }),
-    formattedTime: tx.createdAt.toLocaleTimeString("en-US", {
+    formattedTime: orderDate.toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,

@@ -123,6 +123,7 @@ model User {
   isEmailVerified   Boolean   @default(false)
   pushToken         String?
   isActive          Boolean   @default(true)
+  appliedPromoCode  String?   // user-entered cart promo, persists until checkout/clear
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 

@@ -112,6 +112,12 @@ export const processCheckout = asyncHandler(async (req, res) => {
   created(res, result, "Order initiated. Please complete payment.");
 });
 
+// ── Remove applied promo ──────────────────────────────────────────────────────
+export const removePromo = asyncHandler(async (req, res) => {
+  await userService.removePromoCode(uid(req));
+  ok(res, null, "Promo code removed.");
+});
+
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 // ── Create Order ──────────────────────────────────────────────────────────────
