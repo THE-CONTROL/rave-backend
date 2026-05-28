@@ -368,6 +368,7 @@ model Order {
 
   totalAmount          Float
   evidenceUrl      String
+  packingVideoUrl      String?       // vendor's packing video (Cloudinary URL)
   estimatedArrival     DateTime
   etaDuration          Float
   deliveryFee          Float         @default(0)
@@ -379,6 +380,7 @@ model Order {
   deliveryLng          Float?
   deliveryInstructions String?
   discountAmount       Float?
+  promoCode            String?  
   contactMethod        String?       @default("in-app")
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt

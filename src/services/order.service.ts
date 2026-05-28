@@ -349,7 +349,7 @@ export const uploadOrderEvidence = async (
       where: { id: orderId },
       data: {
         status: newStatus,
-        evidenceUrl: url, // Save the Cloudinary URL
+        packingVideoUrl: url, // ← was evidenceUrl: url, which destroyed the payment reference
         ...(newStatus === "ready" ? { readyAt: new Date() } : {}),
       },
     });

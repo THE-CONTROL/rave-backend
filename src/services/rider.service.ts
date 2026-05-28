@@ -749,7 +749,10 @@ export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
               name: true,
               qty: true,
               price: true,
-              menuItem: { select: { images: true } },
+              extras: true,
+              menuItem: {
+                select: { images: true, ingredients: true },
+              },
             },
           },
         },
@@ -791,11 +794,27 @@ export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
     customerOtp: delivery.customerOtp,
     vendorOtpVerified: delivery.vendorOtpVerified,
     customerOtpVerified: delivery.customerOtpVerified,
-    packageSummary: order.items.map((i) => ({
-      name: i.name,
-      quantity: i.qty,
-      images: i.menuItem?.images ?? null,
-    })),
+    packageSummary: order.items.map((i) => {
+      const rawExtras = i.extras;
+      const extrasIds: string[] = Array.isArray(rawExtras)
+        ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
+        : rawExtras !== null && typeof rawExtras === "object"
+          ? Object.keys(rawExtras as Record<string, unknown>).filter(
+              (k) => (rawExtras as Record<string, unknown>)[k] === true,
+            )
+          : [];
+
+      const extraNames = (i.menuItem?.ingredients ?? [])
+        .filter((ing: any) => extrasIds.includes(ing.id))
+        .map((ing: any) => ing.name);
+
+      return {
+        name: i.name,
+        quantity: i.qty,
+        images: i.menuItem?.images ?? null,
+        extras: extraNames, // names only — rider checks the bag, not prices
+      };
+    }),
     earnings: delivery.earnings,
   };
 };

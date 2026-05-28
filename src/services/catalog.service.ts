@@ -667,6 +667,7 @@ export const getProductDetails = async (
           storeName: true,
           logoUrl: true,
           isOpen: true,
+          storeStatus: true,
           averageRating: true,
         },
       },

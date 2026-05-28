@@ -595,7 +595,9 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
     where: { id: orderId, vendorId: vendor.id },
     include: {
-      items: { include: { menuItem: true } },
+      items: {
+        include: { menuItem: { include: { ingredients: true } } },
+      },
       user: { select: { fullName: true, phone: true } },
       delivery: {
         include: {
@@ -616,6 +618,38 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
 
   return {
     ...order,
+    items: order.items.map((item) => {
+      const rawExtras = item.extras;
+      const extrasIds: string[] = Array.isArray(rawExtras)
+        ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
+        : rawExtras !== null && typeof rawExtras === "object"
+          ? Object.keys(rawExtras as Record<string, unknown>).filter(
+              (k) => (rawExtras as Record<string, unknown>)[k] === true,
+            )
+          : [];
+
+      const resolvedExtras = item.menuItem.ingredients
+        .filter((ing) => extrasIds.includes(ing.id))
+        .map((ing) => ({
+          id: ing.id,
+          name: ing.name,
+          price: ing.price ?? 0,
+        }));
+
+      return {
+        ...item,
+        resolvedExtras,
+        extrasTotal: resolvedExtras.reduce((sum, e) => sum + e.price, 0),
+      };
+    }),
+    // Derived subtotal — the Order model stores no subtotal column, so we
+    // back it out from the stored totals: total − fees + discount.
+    subtotal:
+      (order.totalAmount ?? 0) -
+      (order.deliveryFee ?? 0) -
+      (order.serviceFee ?? 0) -
+      (order.vat ?? 0) +
+      (order.discountAmount ?? 0),
     deliveryInstructions: order.deliveryInstructions,
     contactMethod: order.contactMethod ?? "in-app",
     deliveryLat: order.deliveryLat,

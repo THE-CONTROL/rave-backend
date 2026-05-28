@@ -596,7 +596,11 @@ export const createOrder = async (
       deliveryFee: summary.deliveryFee || 0,
       vat: summary.vat || 0,
       serviceFee: summary.serviceFee || 0,
-      discountAmount: summary.discountAmount || 0,
+      // Combine auto-promo (per item) + code-promo (cart level) into the
+      // single discountAmount column the order detail screens read.
+      discountAmount:
+        (summary.discountAmount || 0) + (summary.promoDiscount || 0),
+      promoCode: summary.promoCode ?? null,
       paymentMethod: dto.paymentMethod as PaymentMethod,
       status: initialStatus,
       estimatedArrival: arrivalTime,
@@ -618,6 +622,18 @@ export const createOrder = async (
       },
     },
   });
+
+  // ── Mark promo usage + clear the applied code now that it's consumed ───────
+  if (summary.promoCode) {
+    await prisma.promotion.updateMany({
+      where: { promoCode: summary.promoCode, vendorId },
+      data: { timesUsed: { increment: 1 } },
+    });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { appliedPromoCode: null },
+    });
+  }
 
   // Clear cart now that order is created
   await prisma.cartItem.deleteMany({ where: { userId } });
@@ -757,10 +773,24 @@ export const processCheckout = async (
 
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
-    select: { autoAcceptOrders: true },
+    select: {
+      autoAcceptOrders: true,
+      isOpen: true,
+      storeStatus: true,
+      storeName: true,
+    },
   });
 
-  const initialStatus = vendor?.autoAcceptOrders ? "preparing" : "new";
+  // ── Re-check vendor availability at payment time ───────────────────────────
+  // The vendor may have closed between adding to cart and checking out.
+  // Block before taking payment, not after.
+  if (!vendor || vendor.storeStatus !== "open" || !vendor.isOpen) {
+    throw AppError.badRequest(
+      `${vendor?.storeName ?? "This restaurant"} is now closed and isn't accepting orders. You have not been charged.`,
+    );
+  }
+
+  const initialStatus = vendor.autoAcceptOrders ? "preparing" : "new";
 
   const order = await prisma.$transaction(async (tx) => {
     const etaMinutes = 25;
@@ -1022,8 +1052,22 @@ export const addToCart = async (
   qty: number,
   extras?: string[],
 ): Promise<void> => {
-  const item = await prisma.menuItem.findUnique({ where: { id: menuItemId } });
+  const item = await prisma.menuItem.findUnique({
+    where: { id: menuItemId },
+    include: {
+      vendor: { select: { isOpen: true, storeStatus: true, storeName: true } },
+    },
+  });
   if (!item || !item.isActive) throw AppError.notFound("Menu item");
+
+  // ── Reject if the vendor is closed or not currently accepting orders ───────
+  // storeStatus must be "open" (not paused/deactivated/under_review/denied),
+  // AND the vendor's manual open toggle must be on.
+  if (item.vendor.storeStatus !== "open" || !item.vendor.isOpen) {
+    throw AppError.badRequest(
+      `${item.vendor.storeName} is currently closed and isn't accepting orders right now.`,
+    );
+  }
 
   const existing = await prisma.cartItem.findFirst({
     where: { userId },
