@@ -27,85 +27,113 @@ export const getSlides = async (role: string) => {
   }));
 };
 
-const img = (id: string) =>
-  `https://images.unsplash.com/photo-${id}?w=600&h=600&fit=crop&auto=format`;
+/**
+ * Unsplash Source API — returns a random photo matching the given keywords.
+ * The `sig` query keeps each slide's photo stable across requests (Unsplash
+ * caches by URL); without it, every fetch could return a different image.
+ *
+ * NOTE: This endpoint was deprecated by Unsplash in 2024 and is best-effort.
+ * For production, replace these URLs with images hosted on Cloudinary
+ * (we already use Cloudinary elsewhere) so onboarding never breaks on a
+ * third-party outage.
+ */
+const img = (keywords: string, sig: number) =>
+  `https://source.unsplash.com/600x600/?${encodeURIComponent(keywords)}&sig=${sig}`;
 
 const DEFAULTS = [
+  // ─────────────────────────────────────────────────────────────────────────
+  // USER — discovering food, ordering quickly, trust & reliability
+  // ─────────────────────────────────────────────────────────────────────────
   {
     role: "user",
     order: 1,
     title: "Craving something good?",
-    description: "Explore trusted food vendors around you.",
-    imageUrl: img("1504674900247-0877df9cc836"),
+    description:
+      "Browse trusted restaurants and street-food vendors near you — from quick bites to full meals, all in one place.",
+    imageUrl: img("nigerian food,jollof rice,african cuisine", 101),
     bullets: [] as string[],
   },
   {
     role: "user",
     order: 2,
     title: "Order in seconds.",
-    description: "Add to cart, checkout quickly, and track your delivery.",
-    imageUrl: img("1526367790999-0150786686a2"),
+    description:
+      "Add items to your cart, customise your meal, pay securely, and watch your rider's progress on the map in real time.",
+    imageUrl: img("mobile food ordering,smartphone restaurant app", 102),
     bullets: [] as string[],
   },
   {
     role: "user",
     order: 3,
     title: "Fresh food. Reliable delivery.",
-    description: "Rated vendors, secure payments, and support.",
-    imageUrl: img("1567637347853-ef9d72c81f4f"),
+    description:
+      "Real reviews from real customers, secure card payments, and a support team that picks up when things go wrong.",
+    imageUrl: img("food delivery rider,motorbike courier", 103),
     bullets: [] as string[],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // VENDOR — visibility, easy management, growth
+  // ─────────────────────────────────────────────────────────────────────────
   {
     role: "vendor",
     order: 1,
     title: "Reach more customers.",
-    description: "List your menu and get discovered by hungry customers.",
-    imageUrl: img("1555396273-359ea4978bb7"),
+    description:
+      "List your menu in minutes and put your kitchen in front of thousands of hungry locals searching for their next meal.",
+    imageUrl: img("restaurant kitchen,chef cooking,african restaurant", 201),
     bullets: [] as string[],
   },
   {
     role: "vendor",
     order: 2,
-    title: "Manage orders easily.",
-    description: "Accept, track, and fulfil orders from one simple dashboard.",
-    imageUrl: img("1546069901-ba9599a7e63c"),
+    title: "Manage orders, your way.",
+    description:
+      "Accept or decline orders, capture packing videos for proof, and track every delivery from a clean, simple dashboard.",
+    imageUrl: img("restaurant owner tablet,kitchen management", 202),
     bullets: [] as string[],
   },
   {
     role: "vendor",
     order: 3,
-    title: "Grow your business.",
+    title: "Grow your food business.",
     description:
-      "Get insights, reviews, and tools to help your food business thrive.",
-    imageUrl: img("1504674900247-0877df9cc836"),
+      "See what's selling, what your customers say, and exactly how much you earned today — with daily payouts straight to your bank.",
+    imageUrl: img("restaurant business growth,small business owner", 203),
     bullets: [] as string[],
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RIDER — earn nearby, simple flow, get started
+  // ─────────────────────────────────────────────────────────────────────────
   {
     role: "rider",
     order: 1,
-    title: "Deliver in your area, earn fast",
-    description: "Pick up orders nearby and get paid instantly.",
-    imageUrl: img("1558618666-fcd25c85cd64"),
+    title: "Deliver nearby. Earn fast.",
+    description:
+      "Pick up orders from restaurants close to you and get paid the moment each delivery is confirmed — no waiting for payday.",
+    imageUrl: img("delivery rider motorcycle,food courier bike", 301),
     bullets: [] as string[],
   },
   {
     role: "rider",
     order: 2,
-    title: "How Rave Works for You",
+    title: "How Rave works for you",
     description: undefined,
-    imageUrl: img("1526367790999-0150786686a2"),
+    imageUrl: img("motorbike delivery map,navigation rider", 302),
     bullets: [
-      "See orders nearby.",
-      "Pick up & deliver — follow the map.",
-      "Earn instantly after delivery.",
+      "See nearby orders the moment they come in.",
+      "Pick up and deliver — the map guides every turn.",
+      "Earnings hit your wallet the second you confirm drop-off.",
     ] as string[],
   },
   {
     role: "rider",
     order: 3,
-    title: "Ready to Ride with Rave?",
-    description: "Sign up now and start delivering with us.",
-    imageUrl: img("1609205807107-2fc33a9d8bbc"),
+    title: "Ready to ride with Rave?",
+    description:
+      "Sign up in minutes, verify your bike, and start earning today — work the hours you want, where you want.",
+    imageUrl: img("motorcycle rider helmet,delivery driver portrait", 303),
     bullets: [] as string[],
   },
 ];
