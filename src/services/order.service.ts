@@ -342,21 +342,23 @@ export const uploadOrderEvidence = async (
   const newStatus: OrderStatus = "ready";
 
   // Ensure the transition is logical (e.g., Preparing -> Ready)
-  assertTransitionAllowed(order.status, newStatus);
+  if (order.status !== "ready") {
+    assertTransitionAllowed(order.status, newStatus);
 
-  await prisma.$transaction(async (tx) => {
-    await tx.order.update({
-      where: { id: orderId },
-      data: {
-        status: newStatus,
-        packingVideoUrl: url, // ← was evidenceUrl: url, which destroyed the payment reference
-        ...(newStatus === "ready" ? { updatedAt: new Date() } : {}),
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: newStatus,
+          packingVideoUrl: url, // ← was evidenceUrl: url, which destroyed the payment reference
+          ...(newStatus === "ready" ? { updatedAt: new Date() } : {}),
+        },
+      });
 
-    // Notify customer that the order is now ready for pickup
-    await notif.notifyOrderReady(order.userId, orderId);
-  }); // Added missing closing brace and parenthesis for transaction
+      // Notify customer that the order is now ready for pickup
+      await notif.notifyOrderReady(order.userId, orderId);
+    }); // Added missing closing brace and parenthesis for transaction
+  }
 
   return { success: true };
 };
