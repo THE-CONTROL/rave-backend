@@ -350,7 +350,7 @@ export const uploadOrderEvidence = async (
       data: {
         status: newStatus,
         packingVideoUrl: url, // ← was evidenceUrl: url, which destroyed the payment reference
-        ...(newStatus === "ready" ? { readyAt: new Date() } : {}),
+        ...(newStatus === "ready" ? { updatedAt: new Date() } : {}),
       },
     });
 
