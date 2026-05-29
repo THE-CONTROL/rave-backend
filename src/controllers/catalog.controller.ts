@@ -83,12 +83,12 @@ export const getItemsByCategory = asyncHandler(async (req, res) => {
   ok(res, result.items, "Items retrieved.", result.meta);
 });
 
-export const getBreakfastPicks = asyncHandler(async (req, res) => {
-  ok(
-    res,
-    await catalogService.getBreakfastPicks({
-      userId: optionalUid(req),
-      radiusKm: req.query.radiusKm as string | undefined,
+export const getMealPicks = asyncHandler(async (req, res) => {
+  res.json(
+    await catalogService.getMealPicks({
+      userId: (req as any).user?.id,
+      radiusKm: req.query.radiusKm as string,
+      meal: req.query.meal as "breakfast" | "lunch" | "dinner" | undefined,
     }),
   );
 });

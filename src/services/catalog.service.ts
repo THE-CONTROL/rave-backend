@@ -708,13 +708,51 @@ export const getProductDetails = async (
   };
 };
 
-export const getBreakfastPicks = async (
-  opts: { userId?: string; radiusKm?: string } = {},
+/**
+ * Meal-of-day picks.
+ *
+ * Determines the active meal window from the server's local time (see
+ * MEAL_WINDOWS below), or accepts an explicit override via `meal`.
+ *
+ * Strategy: try meal-specific category match first; if too few results,
+ * fall back to general popular items so the home screen section never goes
+ * empty just because no vendor tagged anything "Lunch."
+ */
+
+const MEAL_WINDOWS: Record<string, { start: number; end: number }> = {
+  // Hours in 24h format. End is inclusive of the hour.
+  breakfast: { start: 5, end: 10 }, // 5:00 – 10:59
+  lunch: { start: 11, end: 15 }, // 11:00 – 15:59
+  dinner: { start: 16, end: 22 }, // 16:00 – 22:59
+  // 23:00–04:59 → "dinner" (late-night cravings = dinner-type food, most
+  // breakfast vendors closed). This is handled by the resolver below.
+};
+
+const resolveMealFromHour = (
+  hour: number,
+): "breakfast" | "lunch" | "dinner" => {
+  if (
+    hour >= MEAL_WINDOWS.breakfast.start &&
+    hour <= MEAL_WINDOWS.breakfast.end
+  )
+    return "breakfast";
+  if (hour >= MEAL_WINDOWS.lunch.start && hour <= MEAL_WINDOWS.lunch.end)
+    return "lunch";
+  return "dinner"; // covers 16:00–22:59 AND 23:00–04:59
+};
+
+export const getMealPicks = async (
+  opts: {
+    userId?: string;
+    radiusKm?: string;
+    meal?: "breakfast" | "lunch" | "dinner";
+  } = {},
 ) => {
   const radiusKm = opts.radiusKm ? parseFloat(opts.radiusKm) : 10;
+  const meal = opts.meal ?? resolveMealFromHour(new Date().getHours());
+
   let userLat: number | null = null;
   let userLng: number | null = null;
-
   if (opts.userId) {
     const loc = await prisma.savedLocation.findFirst({
       where: { userId: opts.userId, isDefault: true },
@@ -723,30 +761,39 @@ export const getBreakfastPicks = async (
     userLng = loc?.longitude ?? null;
   }
 
-  const items = await prisma.menuItem.findMany({
+  const baseInclude = {
+    vendor: true,
+    images: { where: { isMain: true }, take: 1 },
+    ...(opts.userId ? { favorites: { where: { userId: opts.userId } } } : {}),
+    _count: { select: { orderItems: true } },
+  };
+
+  const baseWhere = {
+    isActive: true,
+    vendor: { isOpen: true },
+  };
+
+  // 1) Try meal-specific match first
+  let items = await prisma.menuItem.findMany({
     where: {
-      isActive: true,
-      vendor: { isOpen: true },
+      ...baseWhere,
       categories: {
         some: {
-          category: { name: { contains: "Breakfast", mode: "insensitive" } },
+          category: {
+            name: { contains: meal, mode: "insensitive" as const },
+          },
         },
       },
     },
-    include: {
-      vendor: true,
-      images: { where: { isMain: true }, take: 1 },
-      // FIX: Safely conditionally include favorites
-      ...(opts.userId ? { favorites: { where: { userId: opts.userId } } } : {}),
-      _count: { select: { orderItems: true } },
-    },
+    include: baseInclude,
     orderBy: { isBestSeller: "desc" },
     take: 40,
   });
 
-  const filtered =
+  // 2) Distance filter
+  const withinRadius = (list: typeof items) =>
     userLat !== null && userLng !== null
-      ? items.filter(
+      ? list.filter(
           (i) =>
             !i.vendor.lat ||
             haversineKm(
@@ -756,21 +803,40 @@ export const getBreakfastPicks = async (
               i.vendor.lng as number,
             ) <= radiusKm,
         )
-      : items;
+      : list;
 
-  return filtered.slice(0, 15).map((item: any) => ({
-    id: item.id,
-    name: item.name,
-    price: item.price,
-    images: item.images,
-    isBestSeller: item.isBestSeller,
-    isFavorite: item.favorites ? item.favorites.length > 0 : false,
-    vendor: {
-      id: item.vendor.id,
-      storeName: item.vendor.storeName,
-      averageRating: item.vendor.averageRating,
-    },
-  }));
+  let filtered = withinRadius(items);
+
+  // 3) Fallback — if too few meal-specific items, broaden to popular items
+  // near you. Keeps the section populated even when vendors don't tag
+  // categories by meal name. Threshold of 4 is a guess; tune in production.
+  if (filtered.length < 4) {
+    const broader = await prisma.menuItem.findMany({
+      where: baseWhere,
+      include: baseInclude,
+      orderBy: [{ isBestSeller: "desc" }, { createdAt: "desc" }],
+      take: 40,
+    });
+    filtered = withinRadius(broader);
+  }
+
+  return {
+    meal, // include the resolved meal so the client can label the section
+    items: filtered.slice(0, 15).map((item: any) => ({
+      id: item.id,
+      name: item.name,
+      price: item.price,
+      images: item.images,
+      isBestSeller: item.isBestSeller,
+      isFavorite: item.favorites ? item.favorites.length > 0 : false,
+      vendor: {
+        id: item.vendor.id,
+        storeName: item.vendor.storeName,
+        averageRating: item.vendor.averageRating,
+        // ... rest of your existing vendor mapping
+      },
+    })),
+  };
 };
 
 // updated getAllVendors and getAllMenuItems
