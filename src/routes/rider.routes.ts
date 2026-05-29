@@ -98,6 +98,8 @@ router.patch(
   validate(v.riderNotificationSettingsSchema),
   ctrl.updateNotificationSettings,
 );
+router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
+router.patch("/notifications/:id/read", ctrl.markNotificationRead);
 
 // ── Onboarding ──
 router.get("/onboarding", ctrl.getRiderOnboardingState);

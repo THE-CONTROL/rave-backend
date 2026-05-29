@@ -5,8 +5,10 @@
  * This keeps services clean and keeps notification logic in one place.
  */
 
+import { NotificationSettings } from "@prisma/client";
 import { prisma } from "../config/database";
 import { logger } from "../config/logger";
+import { sendPush } from "@/utils/push";
 
 interface NotificationPayload {
   userId: string;
@@ -22,13 +24,61 @@ interface NotificationPayload {
   cancelWindow?: string;
 }
 
+// Maps a notification (type + subType) to the settings field that controls it.
+// If a field is undefined here, that notification is always delivered (e.g.
+// system-critical alerts that the user can't opt out of).
+const SETTING_FOR: Record<string, keyof NotificationSettings | undefined> = {
+  "order:placed": "orderConfirmation",
+  "order:approaching": "deliveryArrivals",
+  "order:delivered": "orderStatusUpdates",
+  "order:general": "orderStatusUpdates",
+  "rider:general": "newOrders", // vendor-side
+  "rider:approaching": "riderArrival",
+  "promo:general": "promos",
+};
+
 const push = async (payload: NotificationPayload): Promise<void> => {
   try {
-    await prisma.notification.create({ data: payload });
-    // TODO: integrate Expo push notifications here
-    // await sendPushNotification(user.pushToken, payload.title, payload.message);
+    const notification = await prisma.notification.create({ data: payload });
+
+    // Look up both push token AND settings in one query
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: {
+        pushToken: true,
+        notificationSettings: true,
+      },
+    });
+
+    if (!user?.pushToken) return;
+
+    // Check whether the user has this category disabled
+    const settingsKey = SETTING_FOR[`${payload.type}:${payload.subType}`];
+    if (settingsKey && user.notificationSettings) {
+      const enabled = (user.notificationSettings as any)[settingsKey];
+      if (enabled === false) {
+        // User opted out of this category — keep the DB record (so it appears
+        // in the in-app list if they want to browse it later) but skip push.
+        return;
+      }
+    }
+
+    // Resolve the user's chosen sound, falling back to default.
+    const userSound = user.notificationSettings?.sound ?? "default";
+
+    sendPush({
+      token: user.pushToken,
+      title: payload.title,
+      body: payload.message,
+      sound: userSound === "default" ? "default" : (userSound as any),
+      data: {
+        notificationId: notification.id,
+        type: payload.type,
+        subType: payload.subType,
+        orderId: payload.orderId,
+      },
+    }).catch((err) => logger.error("[push] delivery failed", err));
   } catch (err) {
-    // Non-fatal — log and continue
     logger.error("Failed to create notification", err);
   }
 };

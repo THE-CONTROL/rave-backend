@@ -1262,7 +1262,10 @@ export const getVendorRatingStats = async (userId: string) => {
   const vendor = await _requireVendor(userId);
   const reviews = await prisma.review.findMany({
     where: { vendorId: vendor.id },
-    select: { restaurantRating: true, foodRating: true, riderRating: true },
+    select: { restaurantRating: true, foodRating: true },
+    // riderRating intentionally excluded — that's the rider's stat, not the
+    // vendor's. Folding it in penalises vendors for rider behaviour they
+    // don't control. See submitReview for the matching formula.
   });
 
   if (!reviews.length) {
@@ -1273,11 +1276,9 @@ export const getVendorRatingStats = async (userId: string) => {
   let total = 0;
 
   for (const r of reviews) {
-    const avg = Math.round(
-      (r.restaurantRating + r.foodRating + r.riderRating) / 3,
-    );
-    distribution[avg] = (distribution[avg] ?? 0) + 1;
-    total += avg;
+    const avg = (r.restaurantRating + r.foodRating) / 2;
+    distribution[Math.round(avg)] = (distribution[Math.round(avg)] ?? 0) + 1;
+    total += avg; // sum un-rounded values; round only the final number
   }
 
   return {

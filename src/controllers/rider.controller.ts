@@ -4,6 +4,7 @@ import * as riderService from "../services/rider.service";
 import { AuthenticatedRequest, extractPagination } from "../types";
 import { ok, created, noContent, asyncHandler } from "../utils";
 import { AppError } from "../utils/AppError";
+import { prisma } from "@/config/database";
 
 const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
 
@@ -340,6 +341,24 @@ export const updateNotificationSettings = asyncHandler(
     );
   },
 );
+
+// ── Push token ────────────────────────────────────────────────────────────────
+export const updatePushToken = asyncHandler(async (req, res) => {
+  const { token } = req.body;
+  await prisma.user.update({
+    where: { id: uid(req) },
+    data: { pushToken: token ?? null },
+  });
+  ok(res, null, "Push token updated.");
+});
+
+export const markNotificationRead = asyncHandler(async (req, res) => {
+  await prisma.notification.updateMany({
+    where: { id: req.params.id, userId: uid(req) },
+    data: { isRead: true },
+  });
+  ok(res, null, "Notification marked as read.");
+});
 
 export const getRiderCurrentLocation = asyncHandler(async (req, res) => {
   ok(

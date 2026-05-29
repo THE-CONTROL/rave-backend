@@ -133,8 +133,9 @@ router.patch("/notifications/read-all", ctrl.markAllNotificationsRead);
 router.delete("/notifications/:id", ctrl.deleteNotification);
 router.get("/notifications/settings", ctrl.getNotificationSettings);
 router.patch("/notifications/settings", ctrl.updateNotificationSettings);
+router.patch("/notifications/:id/read", ctrl.markNotificationRead);
 
-router.patch("/push-token", ctrl.updatePushToken);
+router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
 
 router.get("/orders/:id/rider-location", ctrl.getRiderLocation);
 

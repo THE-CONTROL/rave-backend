@@ -738,6 +738,8 @@ model Feedback {
   type      String
   message   String
   role      Role
+  rating  Int?       // 1–5 star rating
+  images  String[]   // Cloudinary URLs for screenshots
   createdAt DateTime @default(now())
 
   @@map("feedback")

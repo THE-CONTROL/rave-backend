@@ -245,6 +245,14 @@ export const updatePushToken = asyncHandler(async (req, res) => {
   ok(res, null, "Push token updated.");
 });
 
+export const markNotificationRead = asyncHandler(async (req, res) => {
+  await prisma.notification.updateMany({
+    where: { id: req.params.id, userId: uid(req) },
+    data: { isRead: true },
+  });
+  ok(res, null, "Notification marked as read.");
+});
+
 // ── Cart promo preview ────────────────────────────────────────────────────────
 export const previewPromo = asyncHandler(async (req, res) => {
   const { code, subtotal, vendorId } = req.body;

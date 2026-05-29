@@ -86,6 +86,8 @@ export const submitFeedback = async (
       role,
       type: data.type,
       message: data.message,
+      rating: data.rating ?? null,
+      images: data.images ?? [],
     },
   });
 };

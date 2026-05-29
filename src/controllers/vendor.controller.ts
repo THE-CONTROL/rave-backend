@@ -295,6 +295,14 @@ export const markAllNotificationsRead = asyncHandler(async (req, res) => {
   ok(res, null, "All notifications marked as read.");
 });
 
+export const markNotificationRead = asyncHandler(async (req, res) => {
+  await prisma.notification.updateMany({
+    where: { id: req.params.id, userId: uid(req) },
+    data: { isRead: true },
+  });
+  ok(res, null, "Notification marked as read.");
+});
+
 export const deleteNotification = asyncHandler(async (req, res) => {
   await vendorService.deleteVendorNotification(uid(req), req.params.id);
   noContent(res);

@@ -1145,6 +1145,10 @@ export const submitReview = async (
     resolutionPreference?: string;
   },
 ): Promise<void> => {
+  // Loosened eligibility: accept either fully-completed orders OR orders the
+  // rider has physically dropped off (delivery.delivered). Mirrors the list
+  // query in myReviews.service.ts so what surfaces in the pending list can
+  // actually be reviewed.
   const order = await prisma.order.findFirst({
     where: {
       id: data.orderId,
@@ -1181,17 +1185,26 @@ export const submitReview = async (
     },
   });
 
-  const stats = await prisma.review.aggregate({
+  // ── Recompute the vendor's cached averageRating ────────────────────────────
+  // Uses (restaurant + food) / 2 — both vendor-controlled. riderRating is
+  // intentionally excluded; that's the rider's responsibility, not the
+  // vendor's, and folding it in would penalise vendors for rider behaviour.
+  const allReviews = await prisma.review.findMany({
     where: { vendorId: order.vendorId },
-    _avg: { restaurantRating: true },
-    _count: { id: true },
+    select: { restaurantRating: true, foodRating: true },
   });
 
-  const newAvg = parseFloat((stats._avg.restaurantRating ?? 0).toFixed(1));
-  const totalReviews = stats._count.id;
-  const positiveReviews = await prisma.review.count({
-    where: { vendorId: order.vendorId, restaurantRating: { gte: 4 } },
-  });
+  const totalReviews = allReviews.length;
+  const sum = allReviews.reduce(
+    (acc, r) => acc + (r.restaurantRating + r.foodRating) / 2,
+    0,
+  );
+  const newAvg =
+    totalReviews > 0 ? parseFloat((sum / totalReviews).toFixed(1)) : 0;
+
+  const positiveReviews = allReviews.filter(
+    (r) => (r.restaurantRating + r.foodRating) / 2 >= 4,
+  ).length;
 
   await prisma.vendorProfile.update({
     where: { id: order.vendorId },

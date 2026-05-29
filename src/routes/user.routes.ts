@@ -22,7 +22,7 @@ router.patch(
   ctrl.changePassword,
 );
 router.delete("/account", ctrl.deleteAccount);
-router.patch("/push-token", ctrl.updatePushToken);
+router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
 
 // ── Saved Locations ───────────────────────────────────────────────────────────
 router.get("/locations", ctrl.getSavedLocations);
@@ -97,6 +97,7 @@ router.patch("/notifications/read-all", ctrl.markAllNotificationsRead);
 router.delete("/notifications/:id", ctrl.deleteNotification);
 router.get("/notifications/settings", ctrl.getNotificationSettings);
 router.patch("/notifications/settings", ctrl.updateNotificationSettings);
+router.patch("/notifications/:id/read", ctrl.markNotificationRead);
 
 // ── My Reviews ────────────────────────────────────────────────────────────────
 router.get("/my-reviews/pending", reviewCtrl.getPending);
