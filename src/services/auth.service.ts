@@ -122,9 +122,10 @@ export const verifyEmail = async (
     ]);
 
     // Welcome email is fire-and-forget — no reason to make the client wait
-    sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName).catch(
-      (err) => console.error("[verifyEmail] Welcome email failed:", err),
-    );
+    sendWelcomeEmail(
+      "lawsonekhorutomwen@gmail.com",
+      otpRecord.user.fullName,
+    ).catch((err) => console.error("[verifyEmail] Welcome email failed:", err));
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
