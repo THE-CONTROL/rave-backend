@@ -262,7 +262,7 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
-  sendOtpEmail("lawsonekhorutomwen@gmail.com", user.fullName, otp, dto.purpose);
+  sendOtpEmail(user.email, user.fullName, otp, dto.purpose);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
