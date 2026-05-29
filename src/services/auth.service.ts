@@ -122,10 +122,9 @@ export const verifyEmail = async (
     ]);
 
     // Welcome email is fire-and-forget — no reason to make the client wait
-    sendWelcomeEmail(
-      "lawsonekhorutomwen@gmail.com",
-      otpRecord.user.fullName,
-    ).catch((err) => console.error("[verifyEmail] Welcome email failed:", err));
+    sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName).catch(
+      (err) => console.error("[verifyEmail] Welcome email failed:", err),
+    );
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
@@ -263,9 +262,7 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
-  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) =>
-    console.error("[resendCode] OTP email failed:", err),
-  );
+  sendOtpEmail("lawsonekhorutomwen@gmail.com", user.fullName, otp, dto.purpose);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
