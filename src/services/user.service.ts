@@ -1146,10 +1146,17 @@ export const submitReview = async (
   },
 ): Promise<void> => {
   const order = await prisma.order.findFirst({
-    where: { id: data.orderId, userId, status: "completed" },
+    where: {
+      id: data.orderId,
+      userId,
+      OR: [
+        { status: "completed" as const },
+        { delivery: { is: { status: "delivered" } } },
+      ],
+    },
   });
   if (!order)
-    throw AppError.badRequest("You can only review a completed order.");
+    throw AppError.badRequest("You can only review a delivered order.");
 
   const existing = await prisma.review.findUnique({
     where: { orderId: data.orderId },

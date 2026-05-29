@@ -16,8 +16,16 @@ export const getPendingReviews = async (
 
   const where: any = {
     userId,
-    status: "completed",
-    review: null, // no review submitted yet
+    // Loosened to include orders that have been physically delivered (rider
+    // dropped off) — review eligibility shouldn't wait on the customer OTP step.
+    // See "Fix 2" below for what counts as "delivered".
+    OR: [
+      { status: "completed" as const },
+      { delivery: { is: { status: "delivered" } } },
+    ],
+    // Use the explicit `is: null` form — safer than `review: null` across
+    // Prisma versions, which has had bugs on 1:1 optional back-relations.
+    review: { is: null },
   };
 
   const [deliveredOrders, total] = await Promise.all([
@@ -186,7 +194,14 @@ export const deleteReview = async (
 
 export const getReviewOrderData = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
-    where: { id: orderId, userId, status: "completed" },
+    where: {
+      id: orderId,
+      userId,
+      OR: [
+        { status: "completed" as const },
+        { delivery: { is: { status: "delivered" } } },
+      ],
+    },
     include: {
       items: {
         include: {
