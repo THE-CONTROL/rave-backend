@@ -82,14 +82,6 @@ export const cancelOrderByUser = async (
   await notif.notifyVendorOrderCancelled(order.vendor.userId, orderId);
 };
 
-export interface CreateOrderInput {
-  savedLocationId: string;
-  paymentMethod: string;
-  instructions?: string;
-  contactMethod?: string;
-  reference: string;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor status update — drives the full order lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +123,7 @@ export const advanceOrderStatus = async (
   switch (newStatus) {
     case "accepted":
       await notif.notifyOrderAccepted(order.userId, orderId, vendor.storeName);
+      await notif.notifyOrderPreparing(order.userId, orderId, vendor.storeName);
       break;
     case "ready": {
       await notif.notifyOrderReady(order.userId, orderId);

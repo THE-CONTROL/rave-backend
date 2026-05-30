@@ -134,6 +134,7 @@ router.delete("/notifications/:id", ctrl.deleteNotification);
 router.get("/notifications/settings", ctrl.getNotificationSettings);
 router.patch("/notifications/settings", ctrl.updateNotificationSettings);
 router.patch("/notifications/:id/read", ctrl.markNotificationRead);
+router.get("/notifications/unread-count", ctrl.getUnreadNotificationCount);
 
 router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
 

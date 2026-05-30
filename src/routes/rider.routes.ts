@@ -100,6 +100,7 @@ router.patch(
 );
 router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
 router.patch("/notifications/:id/read", ctrl.markNotificationRead);
+router.get("/notifications/unread-count", ctrl.getUnreadNotificationCount);
 
 // ── Onboarding ──
 router.get("/onboarding", ctrl.getRiderOnboardingState);

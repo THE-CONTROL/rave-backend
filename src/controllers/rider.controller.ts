@@ -360,6 +360,10 @@ export const markNotificationRead = asyncHandler(async (req, res) => {
   ok(res, null, "Notification marked as read.");
 });
 
+export const getUnreadNotificationCount = asyncHandler(async (req, res) => {
+  ok(res, await riderService.getUnreadNotificationCount(uid(req)));
+});
+
 export const getRiderCurrentLocation = asyncHandler(async (req, res) => {
   ok(
     res,

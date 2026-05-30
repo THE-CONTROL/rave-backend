@@ -253,6 +253,10 @@ export const markNotificationRead = asyncHandler(async (req, res) => {
   ok(res, null, "Notification marked as read.");
 });
 
+export const getUnreadNotificationCount = asyncHandler(async (req, res) => {
+  ok(res, await userService.getUnreadNotificationCount(uid(req)));
+});
+
 // ── Cart promo preview ────────────────────────────────────────────────────────
 export const previewPromo = asyncHandler(async (req, res) => {
   const { code, subtotal, vendorId } = req.body;

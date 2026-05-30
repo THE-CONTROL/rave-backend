@@ -386,7 +386,15 @@ export const getDashboardStats = async (userId: string) => {
       },
     }),
     prisma.transaction.aggregate({
-      where: { riderId: rider.id, type: "payment", createdAt: { gte: today } },
+      // status: "completed" — pending/failed transactions must not inflate
+      // today's earnings number. The rider only "earned" what was actually
+      // credited to their balance.
+      where: {
+        riderId: rider.id,
+        type: "payment",
+        status: "completed",
+        createdAt: { gte: today },
+      },
       _sum: { amount: true },
     }),
   ]);
@@ -897,21 +905,43 @@ export const verifyVendorOtp = async (
 ): Promise<{ success: boolean }> => {
   const rider = await _requireRider(userId);
 
+  // Fetch vendor + rider context up-front so we can fire the notification
+  // after the OTP is verified.
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
+    include: {
+      order: {
+        select: {
+          orderId: true,
+          vendor: { select: { userId: true } },
+        },
+      },
+      rider: {
+        select: {
+          user: { select: { fullName: true } },
+        },
+      },
+    },
   });
   if (!delivery) throw AppError.notFound("Delivery");
 
-  // Compare ignoring spaces
   const stored = delivery.vendorOtp?.replace(/ /g, "") ?? "";
   const given = otp.replace(/ /g, "");
-
   if (stored !== given) throw AppError.badRequest("Invalid OTP code.");
 
   await prisma.delivery.update({
     where: { id: deliveryId },
     data: { vendorOtpVerified: true },
   });
+
+  // Tell the vendor the rider has arrived and verified pickup.
+  if (delivery.order?.vendor?.userId) {
+    notif.notifyVendorRiderArrived(
+      delivery.order.vendor.userId,
+      delivery.order.orderId,
+      delivery.rider?.user?.fullName ?? "Rider",
+    );
+  }
 
   return { success: true };
 };
@@ -992,6 +1022,8 @@ export const verifyCustomerOtp = async (
 
   // 6. Notify user
   await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
+
+  notif.notifyRiderEarningsCredited(userId, earnings);
 
   return { success: true };
 };
@@ -1163,7 +1195,9 @@ export const getAnalytics = async (userId: string) => {
   const [totalTx, totalDeliveries, completedDeliveries, cancelledDeliveries] =
     await Promise.all([
       prisma.transaction.aggregate({
-        where: { riderId: rider.id, type: "payment" },
+        // status: "completed" — analytics should reflect actual earned revenue,
+        // not initiated/pending transactions that may never settle.
+        where: { riderId: rider.id, type: "payment", status: "completed" },
         _sum: { amount: true },
         _avg: { amount: true },
       }),
@@ -1197,8 +1231,6 @@ export const getAnalytics = async (userId: string) => {
       totalDeliveries > 0
         ? Math.round((cancelledDeliveries / totalDeliveries) * 100)
         : 0,
-    declinedOrders: 0,
-    declinedRate: 0,
   };
 };
 
@@ -1479,6 +1511,15 @@ export const updateNotificationSettings = (
     create: { userId, ...data },
     update: data,
   });
+
+export const getUnreadNotificationCount = async (
+  userId: string,
+): Promise<{ count: number }> => {
+  const count = await prisma.notification.count({
+    where: { userId, isRead: false },
+  });
+  return { count };
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Private helpers

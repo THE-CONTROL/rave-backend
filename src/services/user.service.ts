@@ -310,9 +310,38 @@ export const getTransactions = async (
       ? (FILTER_MAP[rawType] as any)
       : undefined;
 
+  // ── Hide pending transactions that have already been superseded ─────────
+  // When Paystack confirms a payment, a fresh transaction is created with
+  // reference FIN_<original>, while the still-pending original sits next to
+  // it. Show the FIN_ row (the canonical, completed one), hide the original.
+  const shadowedRefs = await prisma.transaction
+    .findMany({
+      where: {
+        userId,
+        status: "completed",
+        reference: { startsWith: "FIN_" },
+      },
+      select: { reference: true },
+    })
+    .then((rows) =>
+      rows
+        .map((r) => r.reference?.replace(/^FIN_/, ""))
+        .filter((r): r is string => !!r),
+    );
+
   const where = {
     userId,
     ...(typeFilter ? { type: typeFilter } : {}),
+    ...(shadowedRefs.length > 0
+      ? {
+          NOT: [
+            {
+              status: "initiated" as const,
+              reference: { in: shadowedRefs },
+            },
+          ],
+        }
+      : {}),
   };
 
   const [transactions, total] = await Promise.all([
@@ -580,7 +609,12 @@ export const createOrder = async (
 
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
-    select: { autoAcceptOrders: true },
+    select: { autoAcceptOrders: true, userId: true, storeName: true },
+  });
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { fullName: true },
   });
 
   const initialStatus = vendor?.autoAcceptOrders ? "preparing" : "new";
@@ -650,7 +684,28 @@ export const createOrder = async (
   const itemsSummary = items
     .map((i) => `${i.qty}x ${i.menuItem.name}`)
     .join(", ");
+
   notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, summary.total);
+
+  // New — notify vendor of incoming order
+  if (vendor?.userId) {
+    notif.notifyVendorNewOrder(
+      vendor.userId,
+      order.orderId,
+      user?.fullName ?? "A customer",
+      itemsSummary,
+      summary.total,
+    );
+  }
+
+  // New — notify customer of promo applied (only if they used one)
+  if (summary.promoCode && (summary.promoDiscount ?? 0) > 0) {
+    notif.notifyPromoApplied(
+      userId,
+      summary.promoCode,
+      summary.promoDiscount ?? 0,
+    );
+  }
 
   return { orderId: order.orderId };
 };
@@ -1425,6 +1480,15 @@ export const updateNotificationSettings = async (
     create: { userId, ...data },
     update: data,
   });
+};
+
+export const getUnreadNotificationCount = async (
+  userId: string,
+): Promise<{ count: number }> => {
+  const count = await prisma.notification.count({
+    where: { userId, isRead: false },
+  });
+  return { count };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

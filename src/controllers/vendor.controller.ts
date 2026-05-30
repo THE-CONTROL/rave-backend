@@ -320,6 +320,10 @@ export const updateNotificationSettings = asyncHandler(async (req, res) => {
   );
 });
 
+export const getUnreadNotificationCount = asyncHandler(async (req, res) => {
+  ok(res, await vendorService.getUnreadNotificationCount(uid(req)));
+});
+
 // ── Onboarding ────────────────────────────────────────────────────────────────
 export const getVendorOnboardingState = asyncHandler(async (req, res) => {
   ok(res, await vendorService.getVendorOnboardingState(uid(req)));

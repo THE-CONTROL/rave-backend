@@ -98,6 +98,7 @@ router.delete("/notifications/:id", ctrl.deleteNotification);
 router.get("/notifications/settings", ctrl.getNotificationSettings);
 router.patch("/notifications/settings", ctrl.updateNotificationSettings);
 router.patch("/notifications/:id/read", ctrl.markNotificationRead);
+router.get("/notifications/unread-count", ctrl.getUnreadNotificationCount);
 
 // ── My Reviews ────────────────────────────────────────────────────────────────
 router.get("/my-reviews/pending", reviewCtrl.getPending);

@@ -9,22 +9,6 @@ import { prisma } from "../config/database";
 import { cfg } from "./config.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bank account name resolution
-// In production: call Paystack /bank/resolve or Flutterwave equivalent
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const resolveBankAccount = async (
-  _bankCode: string,
-  _accountNumber: string,
-): Promise<{ accountName: string }> => {
-  // Stub — replace with real payment provider call:
-  // const { data } = await paystack.get(`/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`);
-  // return { accountName: data.account_name };
-  await new Promise((r) => setTimeout(r, 800)); // simulate network
-  return { accountName: "Account Holder Name" };
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Checkout preview — pricing breakdown before order is placed
 // ─────────────────────────────────────────────────────────────────────────────
 

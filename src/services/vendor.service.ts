@@ -681,7 +681,10 @@ export const getAnalytics = async (userId: string) => {
   const [totalTx, totalOrders, completedOrders, cancelledOrders] =
     await Promise.all([
       prisma.transaction.aggregate({
-        where: { vendorId: vendor.id, type: "order" },
+        // status: "completed" — analytics totals must exclude pending payments
+        // (still polling) and failed payments (never settled). Counting these
+        // would show inflated revenue the vendor never actually earned.
+        where: { vendorId: vendor.id, type: "order", status: "completed" },
         _sum: { amount: true },
         _avg: { amount: true },
       }),
@@ -1476,6 +1479,15 @@ export const updateVendorNotificationSettings = (
     create: { userId, ...data },
     update: data,
   });
+
+export const getUnreadNotificationCount = async (
+  userId: string,
+): Promise<{ count: number }> => {
+  const count = await prisma.notification.count({
+    where: { userId, isRead: false },
+  });
+  return { count };
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Private helper

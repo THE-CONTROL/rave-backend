@@ -63,14 +63,23 @@ const push = async (payload: NotificationPayload): Promise<void> => {
       }
     }
 
-    // Resolve the user's chosen sound, falling back to default.
-    const userSound = user.notificationSettings?.sound ?? "default";
+    // Resolve user's chosen sound to what Expo expects in the push payload.
+    // "silent" → send with sound: null (no audio).
+    // "default" → system default sound.
+    // Anything else → expect a bundled file name (e.g. "ring") and append .wav
+    //   since iOS in particular requires the extension in the push payload.
+    const userSoundCode = user.notificationSettings?.sound ?? "default";
+
+    let pushSound: "default" | string | null;
+    if (userSoundCode === "silent") pushSound = null;
+    else if (userSoundCode === "default") pushSound = "default";
+    else pushSound = `${userSoundCode}.wav`;
 
     sendPush({
       token: user.pushToken,
       title: payload.title,
       body: payload.message,
-      sound: userSound === "default" ? "default" : (userSound as any),
+      sound: pushSound as any,
       data: {
         notificationId: notification.id,
         type: payload.type,

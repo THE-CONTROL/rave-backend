@@ -601,7 +601,7 @@ model NotificationSettings {
   riderArrival        Boolean  @default(true)
   performanceTips     Boolean  @default(true)
   reviews             Boolean  @default(true)
-  sound               String   @default("Ring")
+  sound  String  @default("default")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
