@@ -1000,7 +1000,7 @@ export const verifyCustomerOtp = async (
     await tx.transaction.create({
       data: {
         riderId: rider.id,
-        orderId: delivery.orderId,
+        orderId: `${delivery.orderId} + ${delivery.id}`,
         type: "payment",
         status: "initiated",
         title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
