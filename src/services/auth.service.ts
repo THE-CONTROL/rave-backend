@@ -71,9 +71,12 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   await Promise.all([profileCreate, otpCreate]);
 
   // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
-  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch((err) =>
-    console.error("[signUp] OTP email failed:", err),
-  );
+  sendOtpEmail(
+    "lawsonekhorutomwen@gmail.com",
+    user.fullName,
+    otp,
+    "verify-account",
+  ).catch((err) => console.error("[signUp] OTP email failed:", err));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +265,9 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
-  sendOtpEmail(user.email, user.fullName, otp, dto.purpose);
+  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) =>
+    console.error("[resendCode] OTP email failed:", err),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
