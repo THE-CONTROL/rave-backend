@@ -176,9 +176,8 @@ export const getTransactions = asyncHandler(async (req, res) => {
   );
   ok(
     res,
-    { transactions: result.transactions },
+    { transactions: result.transactions, meta: result.meta },
     "Transactions retrieved.",
-    result.meta,
   );
 });
 
