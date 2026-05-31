@@ -997,19 +997,19 @@ export const verifyCustomerOtp = async (
     });
 
     // 4. Record payout in ledger
-    // await tx.transaction.create({
-    //   data: {
-    //     riderId: rider.id,
-    //     orderId: delivery.orderId,
-    //     type: "payment",
-    //     status: "initiated",
-    //     title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
-    //     amount: earnings,
-    //     subtotal: delivery.order.deliveryFee,
-    //     fee: delivery.order.deliveryFee * commission,
-    //     paymentMethod: "bank_transfer",
-    //   },
-    // });
+    await tx.transaction.create({
+      data: {
+        riderId: rider.id,
+        orderId: delivery.orderId,
+        type: "payment",
+        status: "initiated",
+        title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
+        amount: earnings,
+        subtotal: delivery.order.deliveryFee,
+        fee: delivery.order.deliveryFee * commission,
+        paymentMethod: "bank_transfer",
+      },
+    });
   });
 
   // 5. Trigger bank transfer after DB commits (non-blocking)

@@ -144,7 +144,11 @@ export const getPastDeliveries = asyncHandler(
       uid(req),
       req.query as any,
     );
-    ok(res, { grouped: result.grouped }, "Deliveries retrieved.", result.meta);
+    ok(
+      res,
+      { grouped: result.grouped, meta: result.meta },
+      "Deliveries retrieved.",
+    );
   },
 );
 
