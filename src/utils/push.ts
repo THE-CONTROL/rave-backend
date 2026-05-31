@@ -8,7 +8,10 @@ export interface PushPayload {
   title: string;
   body: string;
   data?: Record<string, unknown>;
-  sound?: "default" | null;
+  // "default" → system sound; null → silent; any other string → a bundled
+  // sound filename (e.g. "ring.wav") that the client has packaged. Widened
+  // from the old "default" | null so user-selected sounds actually pass through.
+  sound?: "default" | string | null;
   badge?: number;
 }
 
@@ -28,7 +31,9 @@ export const sendPush = async (payload: PushPayload): Promise<void> => {
     title: payload.title,
     body: payload.body,
     data: payload.data ?? {},
-    sound: payload.sound ?? "default",
+    // Respect an explicit null (silent). Only fall back to "default" when the
+    // caller didn't specify a sound at all.
+    sound: payload.sound === undefined ? "default" : (payload.sound as any),
     badge: payload.badge,
   };
 

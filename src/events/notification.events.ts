@@ -10,6 +10,15 @@ import { prisma } from "../config/database";
 import { logger } from "../config/logger";
 import { sendPush } from "@/utils/push";
 
+// Settings fields that can gate a notification. Naming the field directly on
+// each notification (via `category`) is far more reliable than inferring it
+// from the coarse type:subType pair — several notifications legitimately share
+// a type:subType but belong to different toggles.
+type SettingsKey = keyof Omit<
+  NotificationSettings,
+  "id" | "userId" | "user" | "sound" | "createdAt" | "updatedAt"
+>;
+
 interface NotificationPayload {
   userId: string;
   type: "order" | "rider" | "payment" | "promo" | "wallet";
@@ -22,24 +31,19 @@ interface NotificationPayload {
   price?: number;
   code?: string;
   cancelWindow?: string;
+  // Which user/vendor toggle controls this notification. Omit for
+  // system-critical alerts the user cannot opt out of (cancellations,
+  // refunds, payouts, delivery confirmations). `category` is NOT persisted —
+  // it only drives the send-time gate below.
+  category?: SettingsKey;
 }
-
-// Maps a notification (type + subType) to the settings field that controls it.
-// If a field is undefined here, that notification is always delivered (e.g.
-// system-critical alerts that the user can't opt out of).
-const SETTING_FOR: Record<string, keyof NotificationSettings | undefined> = {
-  "order:placed": "orderConfirmation",
-  "order:approaching": "deliveryArrivals",
-  "order:delivered": "orderStatusUpdates",
-  "order:general": "orderStatusUpdates",
-  "rider:general": "newOrders", // vendor-side
-  "rider:approaching": "riderArrival",
-  "promo:general": "promos",
-};
 
 const push = async (payload: NotificationPayload): Promise<void> => {
   try {
-    const notification = await prisma.notification.create({ data: payload });
+    // `category` is a control field, not a column — strip it before persisting.
+    const { category, ...record } = payload;
+
+    const notification = await prisma.notification.create({ data: record });
 
     // Look up both push token AND settings in one query
     const user = await prisma.user.findUnique({
@@ -52,13 +56,12 @@ const push = async (payload: NotificationPayload): Promise<void> => {
 
     if (!user?.pushToken) return;
 
-    // Check whether the user has this category disabled
-    const settingsKey = SETTING_FOR[`${payload.type}:${payload.subType}`];
-    if (settingsKey && user.notificationSettings) {
-      const enabled = (user.notificationSettings as any)[settingsKey];
+    // Gate on the explicit category. If this notification declares a category
+    // and the user has that toggle off, keep the in-app record but skip the
+    // push. No category → always delivered (system-critical).
+    if (category && user.notificationSettings) {
+      const enabled = (user.notificationSettings as any)[category];
       if (enabled === false) {
-        // User opted out of this category — keep the DB record (so it appears
-        // in the in-app list if they want to browse it later) but skip push.
         return;
       }
     }
@@ -79,7 +82,7 @@ const push = async (payload: NotificationPayload): Promise<void> => {
       token: user.pushToken,
       title: payload.title,
       body: payload.message,
-      sound: pushSound as any,
+      sound: pushSound,
       data: {
         notificationId: notification.id,
         type: payload.type,
@@ -106,6 +109,7 @@ export const notifyOrderPlaced = (
     userId,
     type: "order",
     subType: "placed",
+    category: "orderConfirmation",
     title: "Your Order has been placed.",
     message: itemsSummary,
     icon: "clipboard-outline",
@@ -124,6 +128,7 @@ export const notifyOrderAccepted = (
     userId,
     type: "order",
     subType: "placed",
+    category: "orderStatusUpdates",
     title: "Order Accepted!",
     message: `${storeName} has accepted your order and is preparing it.`,
     icon: "checkmark-circle-outline",
@@ -139,6 +144,7 @@ export const notifyOrderReady = (
     userId,
     type: "order",
     subType: "placed",
+    category: "orderStatusUpdates",
     title: "Order Ready for Pickup",
     message: "A rider has been assigned and is on the way.",
     icon: "bicycle-outline",
@@ -154,6 +160,7 @@ export const notifyOrderDelivered = (
     userId,
     type: "order",
     subType: "delivered",
+    category: "deliveryArrivals",
     title: "Your order has been delivered!",
     message: "Enjoy your meal 🍽️ Don't forget to leave a review.",
     icon: "checkmark-circle-outline",
@@ -166,6 +173,7 @@ export const notifyOrderCancelled = (
   orderId: string,
   cancelledBy: "user" | "store",
 ): Promise<void> =>
+  // No category — cancellations are always delivered (financial/refund impact).
   push({
     userId,
     type: "order",
@@ -196,6 +204,7 @@ export const notifyVendorNewOrder = (
     userId: vendorUserId,
     type: "order",
     subType: "placed",
+    category: "newOrders",
     title: "New Order Received",
     message: `${customerName} just placed an order.\n${itemsSummary}`,
     icon: "clipboard-outline",
@@ -212,6 +221,7 @@ export const notifyVendorOrderCancelled = (
     userId: vendorUserId,
     type: "order",
     subType: "general",
+    category: "orderStatusUpdates",
     title: "Order Cancelled by Customer",
     message: "A customer has cancelled their order.",
     icon: "close-circle-outline",
@@ -227,6 +237,7 @@ export const notifyRefundProcessed = (
   userId: string,
   amount: number,
 ): Promise<void> =>
+  // No category — financial confirmations are always delivered.
   push({
     userId,
     type: "payment",
@@ -246,6 +257,7 @@ export const notifyReferralBonus = (
   bonusAmount: number,
   refereeName: string,
 ): Promise<void> =>
+  // No category — financial confirmations are always delivered.
   push({
     userId,
     type: "payment",
@@ -269,6 +281,7 @@ export const notifyOrderPreparing = (
     userId,
     type: "order",
     subType: "general",
+    category: "orderStatusUpdates",
     title: "Your food is being prepared 👨‍🍳",
     message: `${storeName} is now preparing your order.`,
     icon: "restaurant-outline",
@@ -285,6 +298,7 @@ export const notifyPromoApplied = (
     userId,
     type: "promo",
     subType: "general",
+    category: "promos",
     title: "Promo Applied! 🎉",
     message: `${promoCode} saved you ₦${discountAmount.toLocaleString()} on this order.`,
     icon: "pricetag-outline",
@@ -306,6 +320,7 @@ export const notifyRiderAssigned = (
     userId,
     type: "rider",
     subType: "approaching",
+    category: "riderArrival",
     title: "Rider assigned 🛵",
     message: `${riderName} has accepted your order and is on the way.`,
     icon: "bicycle-outline",
@@ -321,6 +336,8 @@ export const notifyRiderNewOrderAvailable = async (
 ): Promise<void> => {
   await Promise.all(
     riderUserIds.map((userId) =>
+      // No category — a rider being offered work is core to the rider app and
+      // not something the consumer notification toggles should suppress.
       push({
         userId,
         type: "order",
@@ -340,6 +357,7 @@ export const notifyRiderDeliveryAccepted = (
   orderId: string,
   storeName: string,
 ): Promise<void> =>
+  // No category — confirmation of the rider's own accepted job.
   push({
     userId,
     type: "order",
@@ -355,6 +373,7 @@ export const notifyRiderEarningsCredited = (
   userId: string,
   amount: number,
 ): Promise<void> =>
+  // No category — financial confirmations are always delivered.
   push({
     userId,
     type: "payment",
@@ -379,6 +398,7 @@ export const notifyVendorReviewReceived = (
     userId: vendorUserId,
     type: "order",
     subType: "general",
+    category: "reviews",
     title: `New ${rating}-star review ⭐`,
     message: comment
       ? `A customer said: "${comment.slice(0, 80)}${comment.length > 80 ? "…" : ""}"`
@@ -396,6 +416,7 @@ export const notifyVendorRiderArrived = (
     userId: vendorUserId,
     type: "rider",
     subType: "approaching",
+    category: "riderArrival",
     title: "Rider has arrived 🛵",
     message: `${riderName} is at your store to pick up the order.`,
     icon: "bicycle-outline",
