@@ -724,9 +724,9 @@ export const getVendorTransactions = async (
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  // Expanded to include refund and order types based on design
-  const validTypes = ["payment", "withdrawal", "refund", "order"];
-
+  // Only enum-valid types. "withdrawal"/"payout" don't exist on TransactionType,
+  // so filtering by them previously returned an empty list silently.
+  const validTypes = ["payment", "order", "refund"];
   const typeFilter =
     query.type &&
     query.type !== "all" &&
@@ -734,39 +734,9 @@ export const getVendorTransactions = async (
       ? (query.type.toLowerCase() as any)
       : undefined;
 
-  // ── Hide pending transactions that have been superseded by a completed
-  // FIN_ counterpart. When a Paystack payment confirms, a fresh transaction
-  // with reference FIN_<original> is written alongside the still-pending
-  // original. Without this filter, the vendor sees both in their history.
-  // ─────────────────────────────────────────────────────────────────────────
-  const shadowedRefs = await prisma.transaction
-    .findMany({
-      where: {
-        vendorId: vendor.id,
-        status: "completed",
-        reference: { startsWith: "FIN_" },
-      },
-      select: { reference: true },
-    })
-    .then((rows) =>
-      rows
-        .map((r) => r.reference?.replace(/^FIN_/, ""))
-        .filter((r): r is string => !!r),
-    );
-
   const where = {
     vendorId: vendor.id,
     ...(typeFilter ? { type: typeFilter } : {}),
-    ...(shadowedRefs.length > 0
-      ? {
-          NOT: [
-            {
-              status: "initiated" as const,
-              reference: { in: shadowedRefs },
-            },
-          ],
-        }
-      : {}),
   };
 
   const [transactions, total] = await Promise.all([
@@ -779,14 +749,27 @@ export const getVendorTransactions = async (
     prisma.transaction.count({ where }),
   ]);
 
-  // We map the database records to the Transaction interface here
-  const formattedTransactions = transactions.map((tx: any) => ({
-    ...tx,
-    formattedAmount: `₦${tx.amount.toLocaleString()}`,
-    // Ensure colors match the UI design provided in images
-    iconBg:
-      tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
-  }));
+  const formattedTransactions = transactions.map((tx: any) => {
+    const isDebit = tx.type === "refund";
+    const created = new Date(tx.createdAt);
+    return {
+      ...tx,
+      // List card fields the shared component expects
+      formattedAmount: `${isDebit ? "-" : "+"}₦${Math.abs(tx.amount).toLocaleString()}`,
+      formattedDate: created.toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      }),
+      formattedTime: created.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      icon: isDebit ? "arrow-up" : "arrow-down",
+      iconBg: isDebit ? "#FEF3F2" : "#ECFDF5",
+    };
+  });
 
   return {
     transactions: formattedTransactions,
