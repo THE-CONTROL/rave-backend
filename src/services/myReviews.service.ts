@@ -147,7 +147,29 @@ export const getReviewDetail = async (userId: string, reviewId: string) => {
     },
   });
   if (!review) throw AppError.notFound("Review");
-  return review;
+
+  const firstItem = review.order.items[0];
+  const images = firstItem?.menuItem.images ?? [];
+  const mainImage =
+    images.find((img: any) => img.isMain)?.url ?? images[0]?.url ?? null;
+
+  // Flat, frontend-ready shape (mirrors PastReview + the fields the detail
+  // screen reads: image, name, qty, price, orderId, ratings, comment, tags).
+  return {
+    id: review.id,
+    orderId: review.order.orderId,
+    name: firstItem?.menuItem.name ?? "Order",
+    image: mainImage,
+    vendor: review.order.vendor.storeName,
+    qty: review.order.items.reduce((s, i) => s + i.qty, 0),
+    price: review.order.totalAmount,
+    restaurantRating: review.restaurantRating,
+    foodRating: review.foodRating,
+    riderRating: review.riderRating,
+    tags: review.tags,
+    comment: review.comment,
+    createdAt: review.createdAt,
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1644,7 +1644,9 @@ export const getFavoriteRestaurants = async (
         reviewCount: v.totalReviews,
         isOpen: v.isOpen,
         address: v.address ?? null,
-        deliveryTime: "25-35 mins",
+        // No distance context here — see catalog.search. Null lets the card
+        // hide the time instead of showing an absolute, inaccurate value.
+        deliveryTime: null,
         deliveryFee: 0,
         positiveReviews: v.positiveReviews ?? 0,
         closesIn: v.hoursSummary ?? null,

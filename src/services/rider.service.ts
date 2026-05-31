@@ -740,69 +740,30 @@ export const getPastDeliveries = async (
   return { grouped, meta: buildMeta(total, page, limit) };
 };
 
-export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
+export const getDeliveryDetail = async (userId: string, idParam: string) => {
   const rider = await _requireRider(userId);
 
-  const delivery = await prisma.delivery.findFirst({
-    where: { id: deliveryId, riderId: rider.id },
-    include: {
-      order: {
-        include: {
-          vendor: {
-            include: { user: { select: { phone: true } } },
-          },
-          user: { select: { fullName: true, phone: true } },
-          items: {
-            select: {
-              name: true,
-              qty: true,
-              price: true,
-              extras: true,
-              menuItem: {
-                select: { images: true, ingredients: true },
-              },
-            },
-          },
+  const orderInclude = {
+    vendor: {
+      include: { user: { select: { phone: true } } },
+    },
+    user: { select: { fullName: true, phone: true } },
+    items: {
+      select: {
+        name: true,
+        qty: true,
+        price: true,
+        extras: true,
+        menuItem: {
+          select: { images: true, ingredients: true },
         },
       },
     },
-  });
+  } as const;
 
-  if (!delivery) throw AppError.notFound("Delivery");
-
-  const order = delivery.order;
-  const vendor = order.vendor;
-
-  return {
-    id: delivery.id,
-    orderNumber: order.orderId,
-    status: delivery.status,
-    estimatedTime: `${delivery.etaMinutes ?? 15} mins`,
-    deliveryNote: order.deliveryInstructions,
-    contactMethod: order.contactMethod ?? "in-app",
-    vendor: {
-      name: vendor.storeName,
-      avatarUrl: vendor.logoUrl,
-      phone: vendor.user?.phone ?? "",
-      address: vendor.address ?? "",
-      details: "",
-      lat: vendor.lat ?? null,
-      lng: vendor.lng ?? null,
-    },
-    customer: {
-      name: order.user.fullName,
-      avatarUrl: null,
-      phone: order.user.phone,
-      address: order.deliveryAddress,
-      details: order.deliveryInstructions ?? "",
-      lat: order.deliveryLat ?? null,
-      lng: order.deliveryLng ?? null,
-    },
-    vendorOtp: delivery.vendorOtp,
-    customerOtp: delivery.customerOtp,
-    vendorOtpVerified: delivery.vendorOtpVerified,
-    customerOtpVerified: delivery.customerOtpVerified,
-    packageSummary: order.items.map((i) => {
+  // Shared package-summary mapper (rider sees item + extra names, not prices).
+  const mapPackage = (items: any[]) =>
+    items.map((i) => {
       const rawExtras = i.extras;
       const extrasIds: string[] = Array.isArray(rawExtras)
         ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
@@ -820,10 +781,120 @@ export const getDeliveryDetail = async (userId: string, deliveryId: string) => {
         name: i.name,
         quantity: i.qty,
         images: i.menuItem?.images ?? null,
-        extras: extraNames, // names only — rider checks the bag, not prices
+        extras: extraNames,
       };
-    }),
-    earnings: delivery.earnings,
+    });
+
+  // 1) Try the id as an existing delivery assigned to this rider.
+  let delivery = await prisma.delivery.findFirst({
+    where: { id: idParam, riderId: rider.id },
+    include: { order: { include: orderInclude } },
+  });
+
+  // 2) Not a delivery id? It may be an ORDER id (dashboard "available orders"
+  //    pass order ids, and those orders have no delivery yet).
+  let availableOrder: any = null;
+  if (!delivery) {
+    const order = await prisma.order.findFirst({
+      where: { id: idParam },
+      include: { ...orderInclude, delivery: true },
+    });
+
+    if (!order) throw AppError.notFound("Delivery");
+
+    if (order.delivery) {
+      // A delivery already exists for this order.
+      if (order.delivery.riderId !== rider.id) {
+        throw AppError.conflict(
+          "This order has already been accepted by another rider.",
+        );
+      }
+      // Belongs to this rider — load the full delivery by its real id.
+      delivery = await prisma.delivery.findFirst({
+        where: { id: order.delivery.id, riderId: rider.id },
+        include: { order: { include: orderInclude } },
+      });
+    } else {
+      // No delivery yet — only previewable while the order is "ready".
+      if (order.status !== "ready") throw AppError.notFound("Delivery");
+      availableOrder = order;
+    }
+  }
+
+  // ── Real (accepted) delivery ──────────────────────────────────────────────
+  if (delivery) {
+    const order = delivery.order;
+    const vendor = order.vendor;
+
+    return {
+      id: delivery.id,
+      orderNumber: order.orderId,
+      status: delivery.status,
+      estimatedTime: `${delivery.etaMinutes ?? 15} mins`,
+      deliveryNote: order.deliveryInstructions,
+      contactMethod: order.contactMethod ?? "in-app",
+      vendor: {
+        name: vendor.storeName,
+        avatarUrl: vendor.logoUrl,
+        phone: vendor.user?.phone ?? "",
+        address: vendor.address ?? "",
+        details: "",
+        lat: vendor.lat ?? null,
+        lng: vendor.lng ?? null,
+      },
+      customer: {
+        name: order.user.fullName,
+        avatarUrl: null,
+        phone: order.user.phone,
+        address: order.deliveryAddress,
+        details: order.deliveryInstructions ?? "",
+        lat: order.deliveryLat ?? null,
+        lng: order.deliveryLng ?? null,
+      },
+      vendorOtp: delivery.vendorOtp,
+      customerOtp: delivery.customerOtp,
+      vendorOtpVerified: delivery.vendorOtpVerified,
+      customerOtpVerified: delivery.customerOtpVerified,
+      packageSummary: mapPackage(order.items),
+      earnings: delivery.earnings,
+    };
+  }
+
+  // ── Available (not-yet-accepted) order preview ─────────────────────────────
+  const order = availableOrder;
+  const vendor = order.vendor;
+
+  return {
+    id: order.id, // order id — the Accept action consumes this
+    orderNumber: order.orderId,
+    status: "not_accepted" as const,
+    estimatedTime: "15 mins",
+    deliveryNote: order.deliveryInstructions,
+    contactMethod: order.contactMethod ?? "in-app",
+    vendor: {
+      name: vendor.storeName,
+      avatarUrl: vendor.logoUrl,
+      phone: "", // hidden until accepted
+      address: vendor.address ?? "",
+      details: "",
+      lat: vendor.lat ?? null,
+      lng: vendor.lng ?? null,
+    },
+    customer: {
+      name: order.user.fullName,
+      avatarUrl: null,
+      phone: "", // hidden until accepted
+      address: order.deliveryAddress,
+      details: "", // instructions hidden until accepted
+      lat: order.deliveryLat ?? null,
+      lng: order.deliveryLng ?? null,
+    },
+    vendorOtp: null,
+    customerOtp: null,
+    vendorOtpVerified: false,
+    customerOtpVerified: false,
+    packageSummary: mapPackage(order.items),
+    earnings: null,
   };
 };
 
@@ -964,6 +1035,12 @@ export const verifyCustomerOtp = async (
 
   if (stored !== given) throw AppError.badRequest("Invalid OTP code.");
 
+  // Idempotency guard: if this delivery is already delivered, don't re-run the
+  // payout/ledger writes (covers a retried OTP submit or duplicate request).
+  if (delivery.status === "delivered") {
+    return { success: true };
+  }
+
   const commission = await cfg.fees.vendorCommission();
   const earnings = delivery.order.deliveryFee * (1 - commission);
 
@@ -996,20 +1073,30 @@ export const verifyCustomerOtp = async (
       },
     });
 
-    // 4. Record payout in ledger
-    await tx.transaction.create({
-      data: {
-        riderId: rider.id,
-        orderId: delivery.orderId,
-        type: "payment",
-        status: "initiated",
-        title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
-        amount: earnings,
-        subtotal: delivery.order.deliveryFee,
-        fee: delivery.order.deliveryFee * commission,
-        paymentMethod: "bank_transfer",
-      },
+    // 4. Record the rider payout in the ledger. This is a SEPARATE transaction
+    //    row from the customer's payment (which also references this orderId) —
+    //    that's why transactions.orderId must NOT be unique. Guard against a
+    //    duplicate payout row in case this path is ever retried.
+    const existingPayout = await tx.transaction.findFirst({
+      where: { riderId: rider.id, orderId: delivery.orderId, type: "payment" },
+      select: { id: true },
     });
+
+    if (!existingPayout) {
+      await tx.transaction.create({
+        data: {
+          riderId: rider.id,
+          orderId: delivery.orderId,
+          type: "payment",
+          status: "initiated",
+          title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
+          amount: earnings,
+          subtotal: delivery.order.deliveryFee,
+          fee: delivery.order.deliveryFee * commission,
+          paymentMethod: "bank_transfer",
+        },
+      });
+    }
   });
 
   // 5. Trigger bank transfer after DB commits (non-blocking)

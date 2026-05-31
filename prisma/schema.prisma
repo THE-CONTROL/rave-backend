@@ -388,7 +388,7 @@ model Order {
   items                OrderItem[]
   review               Review?
   delivery             Delivery?
-  transaction          Transaction?
+  transactions         Transaction[]
   refundRequests  RefundRequest[]
 
   @@map("orders")
@@ -433,7 +433,7 @@ model Transaction {
   paymentMethod String?           @default("Card")
 
   // ── Contextual Details ────────────────────────────────────────
-  orderId       String?           @unique
+  orderId       String?
   order         Order?            @relation(fields: [orderId], references: [id])
   customerName  String?           // Snapshot for vendor/rider view
   reason        String?           // Snapshot for refunds or adjustments
@@ -445,6 +445,7 @@ model Transaction {
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
+@@index([orderId])
   @@map("transactions")
 }
 

@@ -188,6 +188,12 @@ export const updateStoreSchema = z.object({
   hoursSummary: z.string().optional(),
   bannerUrl: z.string().url().optional().nullable(),
   logoUrl: z.string().url().optional().nullable(),
+  // Coordinates sent by the store-details location picker. These were missing,
+  // so the validate() middleware (which replaces req.body with the parsed,
+  // unknown-key-stripped result) silently dropped them and lat/lng never
+  // reached the service. Accept the frontend's latitude/longitude names here.
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
 });
 
 export const storeScheduleSchema = z.object({

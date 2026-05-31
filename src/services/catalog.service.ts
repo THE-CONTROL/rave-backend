@@ -104,6 +104,27 @@ export const getRestaurantMenu = async (
     prisma.menuItem.count({ where: whereClause }),
   ]);
 
+  // ── Per-item review aggregates ─────────────────────────────────────────────
+  // Reviews reference the items they cover via the `menuItemIds` array. Build
+  // a rating/count map for just the items on this page so each card shows its
+  // own real rating and review count instead of a hardcoded 0 / the vendor avg.
+  const ratingByItem = new Map<string, { sum: number; count: number }>();
+  const pageItemIds = items.map((i: any) => i.id);
+  if (pageItemIds.length) {
+    const relevantReviews = await prisma.review.findMany({
+      where: { menuItemIds: { hasSome: pageItemIds } },
+      select: { menuItemIds: true, foodRating: true },
+    });
+    for (const r of relevantReviews) {
+      for (const mid of r.menuItemIds) {
+        if (!ratingByItem.has(mid)) ratingByItem.set(mid, { sum: 0, count: 0 });
+        const agg = ratingByItem.get(mid)!;
+        agg.sum += r.foodRating;
+        agg.count += 1;
+      }
+    }
+  }
+
   const mappedItems = items.map((item: any) => {
     const optionalIngredients = item.ingredients.filter(
       (ing: any) => ing.isOptional,
@@ -130,6 +151,11 @@ export const getRestaurantMenu = async (
       }),
     );
 
+    const agg = ratingByItem.get(item.id);
+    const itemRating =
+      agg && agg.count > 0 ? parseFloat((agg.sum / agg.count).toFixed(1)) : 0;
+    const itemReviewCount = agg?.count ?? 0;
+
     return {
       id: item.id,
       name: item.name,
@@ -151,8 +177,10 @@ export const getRestaurantMenu = async (
         isOptional: ing.isOptional,
         price: ing.price ?? 0,
       })),
-      rating: vendor.averageRating,
-      reviewCount: 0,
+      // Real per-item aggregates — falls back to the vendor average only when
+      // an item has no reviews of its own yet, so the card is never blank.
+      rating: itemReviewCount > 0 ? itemRating : vendor.averageRating,
+      reviewCount: itemReviewCount,
       // ── Set.has() — consistent with all other services ──
       isFavorite: favoriteItemIds.has(item.id),
       vendor: {
@@ -162,8 +190,6 @@ export const getRestaurantMenu = async (
         isOpen: vendor.isOpen,
         averageRating: vendor.averageRating,
       },
-      // ── "categories" is the field name used in the map ──
-      // The frontend must filter on item.categories, not item.vendorCategories
       categories: item.categories.map((c: any) => ({
         category: {
           id: c.category.id,
@@ -242,7 +268,10 @@ export const getProductReviews = async (
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({
       where,
-      include: { user: { select: { fullName: true, imageUrl: true } } },
+      include: {
+        user: { select: { fullName: true, imageUrl: true } },
+        order: { select: { createdAt: true } },
+      },
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
@@ -250,7 +279,21 @@ export const getProductReviews = async (
     prisma.review.count({ where }),
   ]);
 
-  return { reviews, meta: buildMeta(total, page, limit) };
+  // Shape identical to getRestaurantReviews so the same review-list UI renders
+  // either source without per-field guards.
+  const shaped = reviews.map((r) => ({
+    id: r.id,
+    customerName: r.user.fullName,
+    customerImage: r.user.imageUrl,
+    rating: r.foodRating,
+    date: r.createdAt.toISOString(),
+    comment: r.comment ?? "",
+    verified: r.isVerified,
+    orderDate: r.order?.createdAt.toISOString() ?? null,
+    proofUrls: r.proofUrls ?? [],
+  }));
+
+  return { reviews: shaped, meta: buildMeta(total, page, limit) };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,7 +383,7 @@ export const search = async (
       closesIn: null,
       isYourUsual: false,
       isFavorite: favoriteVendorIds.has(v.id),
-      deliveryTime: "25-35 mins",
+      deliveryTime: null,
     }));
   }
 

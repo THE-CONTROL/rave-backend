@@ -224,12 +224,27 @@ export const updateStoreSettings = async (
     hoursSummary?: string;
     bannerUrl?: string;
     logoUrl?: string;
+    latitude?: number;
+    longitude?: number;
   },
 ) => {
   const vendor = await _requireVendor(userId);
+
+  // The frontend sends `latitude`/`longitude`, but the VendorProfile columns
+  // are `lat`/`lng`. Pull the coordinates out and map them to the real column
+  // names; spreading them straight into Prisma would either error on unknown
+  // fields or (as before) be a no-op. Only include a coordinate when it was
+  // actually provided so partial updates (e.g. just the store name) don't
+  // clobber existing values with undefined.
+  const { latitude, longitude, ...rest } = data;
+
   return prisma.vendorProfile.update({
     where: { id: vendor.id },
-    data,
+    data: {
+      ...rest,
+      ...(latitude !== undefined ? { lat: latitude } : {}),
+      ...(longitude !== undefined ? { lng: longitude } : {}),
+    },
   });
 };
 

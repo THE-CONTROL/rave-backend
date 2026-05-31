@@ -156,7 +156,10 @@ export const advanceOrderStatus = async (
 
 export const getOrderTracking = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
-    where: { id: orderId, userId },
+    // Resolve by either the DB id (cuid, used by the order list) OR the
+    // human-readable orderId (what createOrder returns to the checkout/result
+    // flow). This keeps every entry point into tracking working.
+    where: { userId, OR: [{ id: orderId }, { orderId }] },
     include: {
       user: { select: { fullName: true, phone: true, imageUrl: true } },
       vendor: {
