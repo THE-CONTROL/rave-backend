@@ -10,6 +10,8 @@ import {
 } from "../utils";
 import { PaginationQuery } from "../types";
 
+const tzlookup = require("tz-lookup");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Restaurants (public)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -708,24 +710,16 @@ export const getProductDetails = async (
   };
 };
 
-/**
- * Meal-of-day picks.
- *
- * Determines the active meal window from the server's local time (see
- * MEAL_WINDOWS below), or accepts an explicit override via `meal`.
- *
- * Strategy: try meal-specific category match first; if too few results,
- * fall back to general popular items so the home screen section never goes
- * empty just because no vendor tagged anything "Lunch."
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Meal picks (time-of-day aware, lat/lng-resolved)
+// ─────────────────────────────────────────────────────────────────────────────
 
 const MEAL_WINDOWS: Record<string, { start: number; end: number }> = {
-  // Hours in 24h format. End is inclusive of the hour.
   breakfast: { start: 5, end: 10 }, // 5:00 – 10:59
   lunch: { start: 11, end: 15 }, // 11:00 – 15:59
   dinner: { start: 16, end: 22 }, // 16:00 – 22:59
-  // 23:00–04:59 → "dinner" (late-night cravings = dinner-type food, most
-  // breakfast vendors closed). This is handled by the resolver below.
+  // 23:00–04:59 falls through to "dinner" — late-night cravings map to
+  // dinner-type food, and most breakfast vendors are closed at that hour.
 };
 
 const resolveMealFromHour = (
@@ -738,7 +732,37 @@ const resolveMealFromHour = (
     return "breakfast";
   if (hour >= MEAL_WINDOWS.lunch.start && hour <= MEAL_WINDOWS.lunch.end)
     return "lunch";
-  return "dinner"; // covers 16:00–22:59 AND 23:00–04:59
+  return "dinner";
+};
+
+/**
+ * Returns the current hour (0-23) at the given coordinates.
+ *
+ * Uses tz-lookup to map lat/lng → IANA timezone name, then Intl to read
+ * the hour in that timezone. Falls back to Africa/Lagos when no coords
+ * are provided or when tzlookup throws on invalid coords.
+ *
+ * tz-lookup is offline (bundled polygon data), so no upstream call latency.
+ */
+const currentHourForCoords = (
+  lat: number | null,
+  lng: number | null,
+): number => {
+  let tz = "Africa/Lagos";
+  if (lat !== null && lng !== null) {
+    try {
+      tz = tzlookup(lat, lng);
+    } catch {
+      // Invalid coords. Stick with Lagos fallback rather than 500 the request.
+    }
+  }
+
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "numeric",
+    hour12: false,
+  });
+  return parseInt(fmt.format(new Date()), 10);
 };
 
 export const getMealPicks = async (
@@ -749,8 +773,9 @@ export const getMealPicks = async (
   } = {},
 ) => {
   const radiusKm = opts.radiusKm ? parseFloat(opts.radiusKm) : 10;
-  const meal = opts.meal ?? resolveMealFromHour(new Date().getHours());
 
+  // Resolve the user's saved location first — used for both the meal-time
+  // timezone decision and the radius filter further below.
   let userLat: number | null = null;
   let userLng: number | null = null;
   if (opts.userId) {
@@ -761,22 +786,20 @@ export const getMealPicks = async (
     userLng = loc?.longitude ?? null;
   }
 
-  const baseInclude = {
-    vendor: true,
-    images: { where: { isMain: true }, take: 1 },
-    ...(opts.userId ? { favorites: { where: { userId: opts.userId } } } : {}),
-    _count: { select: { orderItems: true } },
-  };
+  // Server time isn't trustworthy (Render runs UTC; users in Lagos are UTC+1
+  // and could see "dinner picks" at 5 AM local). Resolve the hour at the
+  // user's actual location instead.
+  const meal =
+    opts.meal ?? resolveMealFromHour(currentHourForCoords(userLat, userLng));
 
-  const baseWhere = {
-    isActive: true,
-    vendor: { isOpen: true },
-  };
-
-  // 1) Try meal-specific match first
-  let items = await prisma.menuItem.findMany({
+  // Meal-specific match — no fallback to "popular" items. If no vendor has
+  // tagged a category matching this meal, the section comes back empty and
+  // the home screen shows an empty state. Chosen over a fallback that could
+  // surface breakfast items under "Dinner picks" or vice versa.
+  const items = await prisma.menuItem.findMany({
     where: {
-      ...baseWhere,
+      isActive: true,
+      vendor: { isOpen: true },
       categories: {
         some: {
           category: {
@@ -785,15 +808,21 @@ export const getMealPicks = async (
         },
       },
     },
-    include: baseInclude,
+    include: {
+      vendor: true,
+      images: { where: { isMain: true }, take: 1 },
+      ...(opts.userId ? { favorites: { where: { userId: opts.userId } } } : {}),
+      _count: { select: { orderItems: true } },
+    },
     orderBy: { isBestSeller: "desc" },
     take: 40,
   });
 
-  // 2) Distance filter
-  const withinRadius = (list: typeof items) =>
+  // Radius filter — applied only when we know where the user is. Vendors
+  // missing coordinates pass through (safer than hiding them).
+  const filtered =
     userLat !== null && userLng !== null
-      ? list.filter(
+      ? items.filter(
           (i) =>
             !i.vendor.lat ||
             haversineKm(
@@ -803,25 +832,10 @@ export const getMealPicks = async (
               i.vendor.lng as number,
             ) <= radiusKm,
         )
-      : list;
-
-  let filtered = withinRadius(items);
-
-  // 3) Fallback — if too few meal-specific items, broaden to popular items
-  // near you. Keeps the section populated even when vendors don't tag
-  // categories by meal name. Threshold of 4 is a guess; tune in production.
-  if (filtered.length < 4) {
-    const broader = await prisma.menuItem.findMany({
-      where: baseWhere,
-      include: baseInclude,
-      orderBy: [{ isBestSeller: "desc" }, { createdAt: "desc" }],
-      take: 40,
-    });
-    filtered = withinRadius(broader);
-  }
+      : items;
 
   return {
-    meal, // include the resolved meal so the client can label the section
+    meal,
     items: filtered.slice(0, 15).map((item: any) => ({
       id: item.id,
       name: item.name,
@@ -833,7 +847,6 @@ export const getMealPicks = async (
         id: item.vendor.id,
         storeName: item.vendor.storeName,
         averageRating: item.vendor.averageRating,
-        // ... rest of your existing vendor mapping
       },
     })),
   };
