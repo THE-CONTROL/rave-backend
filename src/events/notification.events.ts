@@ -336,12 +336,14 @@ export const notifyRiderNewOrderAvailable = async (
 ): Promise<void> => {
   await Promise.all(
     riderUserIds.map((userId) =>
-      // No category — a rider being offered work is core to the rider app and
-      // not something the consumer notification toggles should suppress.
+      // Gated by the rider's "Available Orders" toggle. A rider who turned
+      // this off still gets the in-app record but no push, matching the
+      // setting they chose on the rider notifications screen.
       push({
         userId,
         type: "order",
         subType: "general",
+        category: "newOrders",
         title: "New delivery available 📦",
         message: `Order from ${storeName} — earn ₦${Math.round(earnings).toLocaleString()}`,
         icon: "bag-outline",
@@ -357,11 +359,13 @@ export const notifyRiderDeliveryAccepted = (
   orderId: string,
   storeName: string,
 ): Promise<void> =>
-  // No category — confirmation of the rider's own accepted job.
+  // Gated by the rider's "Order Updates" toggle — confirmation that the
+  // rider's own accepted job is ready to pick up is an order update.
   push({
     userId,
     type: "order",
     subType: "general",
+    category: "orderStatusUpdates",
     title: "Delivery confirmed ✅",
     message: `Head to ${storeName} to pick up the order.`,
     icon: "navigate-outline",
