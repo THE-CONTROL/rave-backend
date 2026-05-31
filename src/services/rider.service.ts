@@ -1045,42 +1045,71 @@ const _disburseRiderEarnings = async (
     return;
   }
 
-  try {
-    // Create transfer recipient
-    const recipientRes = await ps.post("/transferrecipient", {
-      type: "nuban",
-      name: bankAccount.accountName,
-      account_number: bankAccount.accountNumber,
-      bank_code: bankAccount.bankCode,
-      currency: "NGN",
-    });
+  // Retry the Paystack chain with exponential-ish backoff. Three attempts at
+  // 1s / 3s / 7s covers most transient failures (network blips, Paystack 5xx,
+  // brief rate limits) without forcing an admin to manually replay payouts.
+  // The transaction row stays in `initiated` only if all three attempts fail;
+  // at that point it's a persistent issue and needs manual investigation.
+  const RETRY_DELAYS_MS = [1_000, 3_000, 7_000];
 
-    const recipientCode = recipientRes.data.data.recipient_code;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      // Create transfer recipient
+      const recipientRes = await ps.post("/transferrecipient", {
+        type: "nuban",
+        name: bankAccount.accountName,
+        account_number: bankAccount.accountNumber,
+        bank_code: bankAccount.bankCode,
+        currency: "NGN",
+      });
 
-    // Initiate transfer
-    const transferRes = await ps.post("/transfer", {
-      source: "balance",
-      amount: Math.round(amount * 100), // Kobo
-      recipient: recipientCode,
-      reason: `Rave delivery payout - Order #${orderId}`,
-    });
+      const recipientCode = recipientRes.data.data.recipient_code;
 
-    const transferCode = transferRes.data.data.transfer_code;
+      // Initiate transfer
+      const transferRes = await ps.post("/transfer", {
+        source: "balance",
+        amount: Math.round(amount * 100), // Kobo
+        recipient: recipientCode,
+        reason: `Rave delivery payout - Order #${orderId}`,
+      });
 
-    // Mark as completed
-    await prisma.transaction.updateMany({
-      where: { riderId, orderId, type: "payment", status: "initiated" },
-      data: { status: "completed", reference: transferCode },
-    });
+      const transferCode = transferRes.data.data.transfer_code;
 
-    console.log(
-      `[PAYOUT] ₦${amount} disbursed to rider ${riderId} — transfer ${transferCode}`,
-    );
-  } catch (err: any) {
-    const reason =
-      err?.response?.data?.message ?? err?.message ?? "Paystack transfer error";
+      // Mark as completed
+      await prisma.transaction.updateMany({
+        where: { riderId, orderId, type: "payment", status: "initiated" },
+        data: { status: "completed", reference: transferCode },
+      });
 
-    throw new Error(`Paystack transfer failed: ${reason}`);
+      console.log(
+        `[PAYOUT] ₦${amount} disbursed to rider ${riderId} — transfer ${transferCode}` +
+          (attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : ""),
+      );
+      return; // success — stop retrying
+    } catch (err: any) {
+      const reason =
+        err?.response?.data?.message ??
+        err?.message ??
+        "Paystack transfer error";
+
+      // If we've exhausted retries, log loudly and stop.
+      if (attempt === RETRY_DELAYS_MS.length) {
+        console.error(
+          `[PAYOUT] All ${attempt + 1} attempts failed for rider ${riderId}, ` +
+            `order ${orderId}, ₦${amount}: ${reason}`,
+        );
+        return;
+      }
+
+      // Otherwise wait and retry. Use the array of delays so backoff is
+      // predictable and tunable (no Math.pow surprises).
+      const waitMs = RETRY_DELAYS_MS[attempt];
+      console.warn(
+        `[PAYOUT] Attempt ${attempt + 1} failed for rider ${riderId} ` +
+          `(${reason}). Retrying in ${waitMs}ms.`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
   }
 };
 
