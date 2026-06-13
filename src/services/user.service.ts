@@ -2,7 +2,12 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
-import { buildMeta, parsePagination } from "../utils";
+import {
+  buildMeta,
+  parsePagination,
+  resolveDateRange,
+  resolveSort,
+} from "../utils";
 import { CheckoutInput, PaginationQuery } from "../types";
 import { UserNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
@@ -287,13 +292,10 @@ const formatUserTransaction = (tx: any, extras?: any) => {
 
 export const getTransactions = async (
   userId: string,
-  query: PaginationQuery & { type?: string },
+  query: PaginationQuery & { type?: string; range?: string; sort?: string },
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
-  // Accept both the UI-friendly type names AND the DB enum names so the
-  // tab filter on the history screen ("Orders", "Refunds", "Referrals")
-  // doesn't have to know about the enum drift.
   const FILTER_MAP: Record<string, string> = {
     top_up: "payment",
     order_payment: "order",
@@ -310,10 +312,7 @@ export const getTransactions = async (
       ? (FILTER_MAP[rawType] as any)
       : undefined;
 
-  // ── Hide pending transactions that have already been superseded ─────────
-  // When Paystack confirms a payment, a fresh transaction is created with
-  // reference FIN_<original>, while the still-pending original sits next to
-  // it. Show the FIN_ row (the canonical, completed one), hide the original.
+  // Hide pending transactions superseded by a completed FIN_ row.
   const shadowedRefs = await prisma.transaction
     .findMany({
       where: {
@@ -332,6 +331,7 @@ export const getTransactions = async (
   const where = {
     userId,
     ...(typeFilter ? { type: typeFilter } : {}),
+    ...resolveDateRange(query.range),
     ...(shadowedRefs.length > 0
       ? {
           NOT: [
@@ -347,7 +347,7 @@ export const getTransactions = async (
   const [transactions, total] = await Promise.all([
     prisma.transaction.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: resolveSort(query.sort) },
       skip,
       take: limit,
       include: {
@@ -436,15 +436,31 @@ export const getTransactionById = async (userId: string, txId: string) => {
 
 export const getOrders = async (
   userId: string,
-  query: PaginationQuery & { status?: string },
+  query: PaginationQuery & {
+    status?: string;
+    range?: string;
+    sort?: string;
+  },
 ) => {
   const { page, limit, skip } = parsePagination(query);
 
+  const statuses =
+    query.status && query.status !== "all"
+      ? query.status
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
   const where = {
     userId,
-    ...(query.status && query.status !== "all"
-      ? { status: query.status as any }
-      : {}),
+    ...(statuses.length === 1
+      ? { status: statuses[0] as any }
+      : statuses.length > 1
+        ? { status: { in: statuses as any[] } }
+        : {}),
+    // Date-range filter from the orders filter modal ("Last 7 days", etc).
+    ...resolveDateRange(query.range),
   };
 
   const [orders, total] = await Promise.all([
@@ -468,7 +484,7 @@ export const getOrders = async (
         },
         vendor: { select: { storeName: true, logoUrl: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: resolveSort(query.sort) },
       skip,
       take: limit,
     }),

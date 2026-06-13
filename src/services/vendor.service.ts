@@ -2,7 +2,13 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
-import { buildMeta, maskAccountNumber, parsePagination } from "../utils";
+import {
+  buildMeta,
+  maskAccountNumber,
+  parsePagination,
+  resolveDateRange,
+  resolveSort,
+} from "../utils";
 import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
@@ -565,32 +571,64 @@ export const deleteMenuItems = async (
 export const getVendorOrders = async (
   userId: string,
   tab: string,
-  query: PaginationQuery,
+  query: PaginationQuery & { status?: string; search?: string },
 ) => {
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  const statusMap: Record<string, string[]> = {
+  const ALL_STATUSES = [
+    "new",
+    "accepted",
+    "preparing",
+    "ready",
+    "ongoing",
+    "completed",
+    "cancelled",
+  ] as const;
+
+  const statusMap: Record<string, readonly string[]> = {
+    all: ALL_STATUSES,
     active: ["new", "accepted", "preparing", "ready", "ongoing"],
     completed: ["completed"],
     cancelled: ["cancelled"],
   };
 
-  const statusFilter = statusMap[tab] ?? statusMap.active;
+  // The tab defines the allowed status group. An optional precise `status`
+  // (the sub-status pills on the "active" tab) narrows within that group —
+  // and crucially is applied server-side so it paginates correctly. Applying
+  // it client-side (the old behaviour) broke infinite scroll: a sub-status
+  // whose orders lived on later pages could never load, because onEndReached
+  // fired on the filtered (often empty) list.
+  const tabStatuses = statusMap[tab] ?? statusMap.active;
+
+  const status =
+    query.status && query.status !== "all"
+      ? // Only honour a precise status if it belongs to this tab's group,
+        // otherwise ignore it (prevents e.g. ?status=completed on the active tab).
+        tabStatuses.includes(query.status)
+        ? [query.status]
+        : tabStatuses
+      : tabStatuses;
+
+  const search = query.search?.trim();
 
   const where = {
     vendorId: vendor.id,
-    status: {
-      in: statusFilter as (
-        | "new"
-        | "accepted"
-        | "preparing"
-        | "ready"
-        | "ongoing"
-        | "completed"
-        | "cancelled"
-      )[],
-    },
+    status: { in: status as (typeof ALL_STATUSES)[number][] },
+    // Server-side search across the human order id and the customer name, so
+    // search spans the entire result set, not just the pages already loaded.
+    ...(search
+      ? {
+          OR: [
+            { orderId: { contains: search, mode: "insensitive" as const } },
+            {
+              user: {
+                fullName: { contains: search, mode: "insensitive" as const },
+              },
+            },
+          ],
+        }
+      : {}),
   };
 
   const [orders, total] = await Promise.all([
@@ -734,13 +772,17 @@ export const getAnalytics = async (userId: string) => {
 
 export const getVendorTransactions = async (
   userId: string,
-  query: PaginationQuery & { type?: string },
+  query: PaginationQuery & { type?: string; range?: string; sort?: string },
 ) => {
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  // Expanded to include refund and order types based on design
-  const validTypes = ["payment", "withdrawal", "refund", "order"];
+  // Only types that are actually written against a vendorId exist in the
+  // ledger: "order" (the customer's payment = the vendor's earning) and
+  // "refund". There is no vendor "payment"/"withdrawal" row anywhere in the
+  // codebase, so they're excluded — advertising them would only ever return
+  // empty results.
+  const validTypes = ["order", "refund"];
 
   const typeFilter =
     query.type &&
@@ -772,6 +814,7 @@ export const getVendorTransactions = async (
   const where = {
     vendorId: vendor.id,
     ...(typeFilter ? { type: typeFilter } : {}),
+    ...resolveDateRange(query.range),
     ...(shadowedRefs.length > 0
       ? {
           NOT: [
@@ -787,18 +830,16 @@ export const getVendorTransactions = async (
   const [transactions, total] = await Promise.all([
     prisma.transaction.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: resolveSort(query.sort) },
       skip,
       take: limit,
     }),
     prisma.transaction.count({ where }),
   ]);
 
-  // We map the database records to the Transaction interface here
   const formattedTransactions = transactions.map((tx: any) => ({
     ...tx,
     formattedAmount: `₦${tx.amount.toLocaleString()}`,
-    // Ensure colors match the UI design provided in images
     iconBg:
       tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
   }));

@@ -116,3 +116,33 @@ export const formatDistance = (km: number): string => {
 /** Rough ETA estimate: assumes 30km/h average speed in traffic */
 export const estimateEtaMinutes = (km: number): number =>
   Math.max(10, Math.round((km / 30) * 60));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date-range filter helper (shared by orders + transactions list filtering)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type DateRangeKey = "7d" | "30d" | "year" | "all";
+
+/**
+ * Resolve a range key to a Prisma `createdAt` filter object.
+ * Returns {} for "all" / unknown so it can be spread into a where clause.
+ */
+export const resolveDateRange = (
+  range?: string,
+): { createdAt?: { gte: Date } } => {
+  const now = new Date();
+  switch (range) {
+    case "7d":
+      return { createdAt: { gte: new Date(now.getTime() - 7 * 86400_000) } };
+    case "30d":
+      return { createdAt: { gte: new Date(now.getTime() - 30 * 86400_000) } };
+    case "year":
+      return { createdAt: { gte: new Date(now.getFullYear(), 0, 1) } };
+    default:
+      return {};
+  }
+};
+
+/** Resolve a sort key to a Prisma createdAt order. Defaults to newest first. */
+export const resolveSort = (sort?: string): "asc" | "desc" =>
+  sort === "oldest" ? "asc" : "desc";

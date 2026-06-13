@@ -152,7 +152,11 @@ export const getOrders = asyncHandler(async (req, res) => {
   const result = await vendorService.getVendorOrders(
     uid(req),
     (req.query.tab as string) ?? "active",
-    extractPagination(req.query),
+    {
+      ...extractPagination(req.query),
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+    },
   );
   ok(res, { orders: result.orders }, "Orders retrieved.", result.meta);
 });

@@ -1382,14 +1382,37 @@ export const getRiderRatingStats = async (userId: string) => {
 
 export const getRiderReviews = async (
   userId: string,
-  query: PaginationQuery,
+  query: PaginationQuery & { rating?: string; sort?: string },
 ) => {
   const rider = await _requireRider(userId);
   const { page, limit, skip } = parsePagination(query);
 
+  // Star filter (1–5) and sort, applied server-side so they page correctly.
+  const ratingNum = query.rating ? Number(query.rating) : undefined;
+  const ratingFilter =
+    ratingNum && ratingNum >= 1 && ratingNum <= 5
+      ? { riderRating: ratingNum }
+      : {};
+
+  const order: "asc" | "desc" = query.sort === "oldest" ? "asc" : "desc";
+
+  const where = {
+    order: { delivery: { riderId: rider.id } },
+    ...ratingFilter,
+  };
+
+  const orderBy =
+    query.sort === "oldest"
+      ? { createdAt: "asc" as const }
+      : query.sort === "highest"
+        ? { riderRating: "desc" as const }
+        : query.sort === "lowest"
+          ? { riderRating: "asc" as const }
+          : { createdAt: "desc" as const };
+
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({
-      where: { order: { delivery: { riderId: rider.id } } },
+      where,
       include: {
         user: { select: { fullName: true, imageUrl: true } },
         order: {
@@ -1399,13 +1422,11 @@ export const getRiderReviews = async (
           },
         },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: orderBy,
       skip,
       take: limit,
     }),
-    prisma.review.count({
-      where: { order: { delivery: { riderId: rider.id } } },
-    }),
+    prisma.review.count({ where }),
   ]);
 
   return {
