@@ -857,6 +857,13 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
       customerOtpVerified: delivery.customerOtpVerified,
       packageSummary: mapPackage(order.items),
       earnings: delivery.earnings,
+      // Confirmation media so the delivery details screen can show proof of
+      // pickup (rider photographed the food at the vendor) and proof of
+      // delivery (rider photographed the handover to the customer), plus the
+      // vendor's packing video if one was recorded.
+      pickupProofUrl: delivery.pickupProofUrl ?? null,
+      deliveryProofUrl: delivery.deliveryProofUrl ?? null,
+      packingVideoUrl: order.packingVideoUrl ?? null,
     };
   }
 
@@ -1035,82 +1042,17 @@ export const verifyCustomerOtp = async (
 
   if (stored !== given) throw AppError.badRequest("Invalid OTP code.");
 
-  // Idempotency guard: if this delivery is already delivered, don't re-run the
-  // payout/ledger writes (covers a retried OTP submit or duplicate request).
-  if (delivery.status === "delivered") {
-    return { success: true };
-  }
-
-  const commission = await cfg.fees.vendorCommission();
-  const earnings = delivery.order.deliveryFee * (1 - commission);
-
-  await prisma.$transaction(async (tx) => {
-    // 1. Mark delivery as verified and delivered
-    await tx.delivery.update({
+  // Verify ONLY. Completion (delivered/completed status + rider payout) now
+  // happens in uploadDeliveryProof, so the proof photo is guaranteed to be
+  // captured and saved BEFORE the order is finalised. Previously this function
+  // completed the order immediately, which (a) let the photo step be skipped
+  // and (b) made uploadDeliveryProof early-return and discard the photo.
+  if (!delivery.customerOtpVerified) {
+    await prisma.delivery.update({
       where: { id: deliveryId },
-      data: {
-        customerOtpVerified: true,
-        status: "delivered",
-        deliveredAt: new Date(),
-        earnings,
-      },
+      data: { customerOtpVerified: true },
     });
-
-    // 2. Mark order as completed
-    await tx.order.update({
-      where: { id: delivery.orderId },
-      data: { status: "completed" },
-    });
-
-    // 3. Update rider profile stats
-    await tx.riderProfile.update({
-      where: { id: rider.id },
-      data: {
-        totalDeliveries: { increment: 1 },
-        totalEarnings: { increment: earnings },
-        // Keep isOnline state — rider stays online after a delivery
-        // averageRating is updated separately when a review is submitted
-      },
-    });
-
-    // 4. Record the rider payout in the ledger. This is a SEPARATE transaction
-    //    row from the customer's payment (which also references this orderId) —
-    //    that's why transactions.orderId must NOT be unique. Guard against a
-    //    duplicate payout row in case this path is ever retried.
-    const existingPayout = await tx.transaction.findFirst({
-      where: { riderId: rider.id, orderId: delivery.orderId, type: "payment" },
-      select: { id: true },
-    });
-
-    if (!existingPayout) {
-      await tx.transaction.create({
-        data: {
-          riderId: rider.id,
-          orderId: delivery.orderId,
-          type: "payment",
-          status: "initiated",
-          title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
-          amount: earnings,
-          subtotal: delivery.order.deliveryFee,
-          fee: delivery.order.deliveryFee * commission,
-          paymentMethod: "bank_transfer",
-        },
-      });
-    }
-  });
-
-  // 5. Trigger bank transfer after DB commits (non-blocking)
-  _disburseRiderEarnings(rider.id, earnings, delivery.orderId).catch((err) => {
-    console.error(
-      `[PAYOUT] Failed to disburse to rider ${rider.id}:`,
-      err?.message,
-    );
-  });
-
-  // 6. Notify user
-  await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
-
-  notif.notifyRiderEarningsCredited(userId, earnings);
+  }
 
   return { success: true };
 };
@@ -1234,43 +1176,92 @@ export const uploadDeliveryProof = async (
 ): Promise<{ success: boolean }> => {
   const rider = await _requireRider(userId);
 
-  // 1. Fetch delivery to ensure ownership and get the associated orderId
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
-    select: { id: true, orderId: true, status: true },
+    include: { order: true },
   });
-
   if (!delivery) throw AppError.notFound("Delivery");
 
-  // Prevent double-processing if already delivered
+  // Idempotent: if already delivered, just ensure the proof URL is stored and
+  // return. Prevents double payout on a retried upload.
   if (delivery.status === "delivered") {
+    if (!delivery.deliveryProofUrl) {
+      await prisma.delivery.update({
+        where: { id: deliveryId },
+        data: { deliveryProofUrl: fileUrl },
+      });
+    }
     return { success: true };
   }
 
-  // 2. Atomic Transaction: Update Delivery and Order status
-  await prisma.$transaction([
-    // Update Delivery record
-    prisma.delivery.update({
+  const commission = await cfg.fees.vendorCommission();
+  const earnings = delivery.order.deliveryFee * (1 - commission);
+
+  // This is now the single completion point. The proof photo is saved in the
+  // SAME transaction that marks the order completed, so a delivery can never be
+  // finalised without its confirmation photo, and the order reliably reaches
+  // "completed" (which is what unblocks the customer's review + the completed
+  // orders list).
+  await prisma.$transaction(async (tx) => {
+    await tx.delivery.update({
       where: { id: deliveryId },
       data: {
         deliveryProofUrl: fileUrl,
+        customerOtpVerified: true,
         status: "delivered",
         deliveredAt: new Date(),
+        earnings,
       },
-    }),
-    // Update main Order record
-    prisma.order.update({
+    });
+
+    await tx.order.update({
       where: { id: delivery.orderId },
-      data: {
-        status: "completed",
-      },
-    }),
-    // Optional: Increment rider's total delivery count
-    prisma.riderProfile.update({
+      data: { status: "completed" },
+    });
+
+    await tx.riderProfile.update({
       where: { id: rider.id },
-      data: { totalDeliveries: { increment: 1 } },
-    }),
-  ]);
+      data: {
+        totalDeliveries: { increment: 1 },
+        totalEarnings: { increment: earnings },
+      },
+    });
+
+    // Rider payout ledger row — separate from the customer's payment row that
+    // also references this orderId (that's why transactions.orderId isn't
+    // unique). Guard against a duplicate on a retried completion.
+    const existingPayout = await tx.transaction.findFirst({
+      where: { riderId: rider.id, orderId: delivery.orderId, type: "payment" },
+      select: { id: true },
+    });
+
+    if (!existingPayout) {
+      await tx.transaction.create({
+        data: {
+          riderId: rider.id,
+          orderId: delivery.orderId,
+          type: "payment",
+          status: "initiated",
+          title: `Delivery Payout - Order #${delivery.order.orderId ?? delivery.orderId}`,
+          amount: earnings,
+          subtotal: delivery.order.deliveryFee,
+          fee: delivery.order.deliveryFee * commission,
+          paymentMethod: "bank_transfer",
+        },
+      });
+    }
+  });
+
+  // Bank transfer after commit (non-blocking).
+  _disburseRiderEarnings(rider.id, earnings, delivery.orderId).catch((err) => {
+    console.error(
+      `[PAYOUT] Failed to disburse to rider ${rider.id}:`,
+      err?.message,
+    );
+  });
+
+  await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
+  notif.notifyRiderEarningsCredited(userId, earnings);
 
   return { success: true };
 };

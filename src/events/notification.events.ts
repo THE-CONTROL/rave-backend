@@ -73,16 +73,28 @@ const push = async (payload: NotificationPayload): Promise<void> => {
     //   since iOS in particular requires the extension in the push payload.
     const userSoundCode = user.notificationSettings?.sound ?? "default";
 
+    // iOS plays the payload sound directly. Android ignores it and plays the
+    // sound bound to the notification CHANNEL, so we also send a channelId that
+    // matches the user's choice. The client creates one channel per sound.
     let pushSound: "default" | string | null;
-    if (userSoundCode === "silent") pushSound = null;
-    else if (userSoundCode === "default") pushSound = "default";
-    else pushSound = `${userSoundCode}.wav`;
+    let channelId: string;
+    if (userSoundCode === "silent") {
+      pushSound = null;
+      channelId = "silent";
+    } else if (userSoundCode === "default") {
+      pushSound = "default";
+      channelId = "default";
+    } else {
+      pushSound = `${userSoundCode}.wav`;
+      channelId = `sound_${userSoundCode}`;
+    }
 
     sendPush({
       token: user.pushToken,
       title: payload.title,
       body: payload.message,
       sound: pushSound,
+      channelId,
       data: {
         notificationId: notification.id,
         type: payload.type,

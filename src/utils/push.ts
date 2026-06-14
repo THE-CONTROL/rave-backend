@@ -12,6 +12,10 @@ export interface PushPayload {
   // sound filename (e.g. "ring.wav") that the client has packaged. Widened
   // from the old "default" | null so user-selected sounds actually pass through.
   sound?: "default" | string | null;
+  // Android-only: the notification channel to deliver on. On Android the
+  // channel (not the payload sound) determines the sound + importance, so this
+  // must match a channel the client created for the user's chosen sound.
+  channelId?: string;
   badge?: number;
 }
 
@@ -34,6 +38,7 @@ export const sendPush = async (payload: PushPayload): Promise<void> => {
     // Respect an explicit null (silent). Only fall back to "default" when the
     // caller didn't specify a sound at all.
     sound: payload.sound === undefined ? "default" : (payload.sound as any),
+    ...(payload.channelId ? { channelId: payload.channelId } : {}),
     badge: payload.badge,
   };
 

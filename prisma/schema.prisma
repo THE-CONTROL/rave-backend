@@ -412,6 +412,23 @@ model OrderItem {
 // Wallet & Finances
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Captures the order intent at payment-init time so the server can create the
+// order on verified payment success (callback OR webhook), independent of
+// whether the app ever returns to the foreground. Deleted once the order is
+// created. Keyed by the Paystack transaction reference.
+model PendingOrder {
+  id              String   @id @default(uuid())
+  reference       String   @unique
+  userId          String
+  savedLocationId String
+  paymentMethod   String
+  contactMethod   String   @default("in-app")
+  instructions    String?
+  createdAt       DateTime @default(now())
+
+  @@map("pending_orders")
+}
+
 model Transaction {
   id            String            @id @default(uuid())
   reference     String?           @unique @default(cuid())

@@ -582,6 +582,14 @@ export const getOrderById = async (userId: string, orderId: string) => {
       lat: order.vendor.lat ?? null,
       lng: order.vendor.lng ?? null,
     },
+    // Confirmation media for the order details screen: the vendor's packing
+    // video and the rider's pickup/delivery proof photos. Exposed as a stable
+    // shape so the client doesn't have to reach into the delivery relation.
+    confirmationMedia: {
+      packingVideoUrl: order.packingVideoUrl ?? null,
+      pickupProofUrl: order.delivery?.pickupProofUrl ?? null,
+      deliveryProofUrl: order.delivery?.deliveryProofUrl ?? null,
+    },
   };
 };
 

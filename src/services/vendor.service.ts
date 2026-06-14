@@ -127,7 +127,11 @@ export const getDashboard = async (userId: string) => {
     prisma.transaction.aggregate({
       where: {
         vendorId: vendor.id,
-        type: "payment",
+        // Vendor earnings are recorded as type "order" (the customer's order
+        // payment). type "payment" is the RIDER payout — summing that here is
+        // why today's revenue read wrong/zero. Match the analytics page, which
+        // also sums type "order".
+        type: "order",
         status: "completed",
         createdAt: { gte: startOfToday },
       },
@@ -138,8 +142,11 @@ export const getDashboard = async (userId: string) => {
     prisma.order.count({
       where: {
         vendorId: vendor.id,
-        status: "accepted",
-        delivery: { riderId: { not: "" } },
+        // A Delivery row only exists once a rider has accepted, so "rider
+        // assigned" = the order has a delivery. (riderId on Delivery is a
+        // required column, so the old `not: ""` / `not: null` guards were both
+        // wrong — checking the relation's existence is the correct test.)
+        delivery: { isNot: null },
       },
     }),
     prisma.order.count({ where: { vendorId: vendor.id, status: "ongoing" } }),
@@ -721,6 +728,13 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
           lng: rider.currentLng,
         }
       : null,
+    // Confirmation media for the vendor's order details screen: the packing
+    // video the vendor recorded, and the rider's pickup/delivery proof photos.
+    confirmationMedia: {
+      packingVideoUrl: order.packingVideoUrl ?? null,
+      pickupProofUrl: order.delivery?.pickupProofUrl ?? null,
+      deliveryProofUrl: order.delivery?.deliveryProofUrl ?? null,
+    },
   };
 };
 
@@ -728,25 +742,70 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
 // Analytics
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getAnalytics = async (userId: string) => {
+export const getAnalytics = async (
+  userId: string,
+  opts?: { filter?: string; startDate?: string; endDate?: string },
+) => {
   const vendor = await _requireVendor(userId);
+
+  // Resolve the requested window so the numbers actually change when the
+  // vendor switches Today / This Week / This Month / This Year. Previously the
+  // filter was ignored and every selection showed all-time totals.
+  const now = new Date();
+  let from: Date | undefined;
+
+  if (opts?.startDate) {
+    from = new Date(opts.startDate);
+  } else {
+    switch ((opts?.filter ?? "Today").toLowerCase()) {
+      case "today": {
+        from = new Date();
+        from.setHours(0, 0, 0, 0);
+        break;
+      }
+      case "this week": {
+        from = new Date();
+        from.setDate(from.getDate() - 6);
+        from.setHours(0, 0, 0, 0);
+        break;
+      }
+      case "this month": {
+        from = new Date(now.getFullYear(), now.getMonth(), 1);
+        break;
+      }
+      case "this year": {
+        from = new Date(now.getFullYear(), 0, 1);
+        break;
+      }
+      default:
+        from = undefined; // all-time
+    }
+  }
+  const to = opts?.endDate ? new Date(opts.endDate) : undefined;
+
+  const createdAtFilter =
+    from || to
+      ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+      : {};
 
   const [totalTx, totalOrders, completedOrders, cancelledOrders] =
     await Promise.all([
       prisma.transaction.aggregate({
-        // status: "completed" — analytics totals must exclude pending payments
-        // (still polling) and failed payments (never settled). Counting these
-        // would show inflated revenue the vendor never actually earned.
-        where: { vendorId: vendor.id, type: "order", status: "completed" },
+        where: {
+          vendorId: vendor.id,
+          type: "order",
+          status: "completed",
+          ...createdAtFilter,
+        },
         _sum: { amount: true },
         _avg: { amount: true },
       }),
-      prisma.order.count({ where: { vendorId: vendor.id } }),
+      prisma.order.count({ where: { vendorId: vendor.id, ...createdAtFilter } }),
       prisma.order.count({
-        where: { vendorId: vendor.id, status: "completed" },
+        where: { vendorId: vendor.id, status: "completed", ...createdAtFilter },
       }),
       prisma.order.count({
-        where: { vendorId: vendor.id, status: "cancelled" },
+        where: { vendorId: vendor.id, status: "cancelled", ...createdAtFilter },
       }),
     ]);
 

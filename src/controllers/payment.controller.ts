@@ -70,12 +70,14 @@ export const handleCallback = async (req: Request, res: Response) => {
     return;
   }
 
-  // Verify and create FIN_ record — this ensures checkPaymentStatus
-  // succeeds on the first poll even if the webhook hasn't fired yet
+  // Verify the payment AND create the order server-side from the saved intent.
+  // This guarantees the order exists the instant payment is confirmed, even if
+  // the app never returns to the foreground. Idempotent, so the app's own
+  // createOrder call (if it does return) safely no-ops.
   try {
-    await paymentService.verifyPayment(reference as string);
+    await paymentService.finalizeOrderFromPayment(reference as string);
   } catch {
-    // Swallow — webhook is the backup, polling will retry
+    // Swallow — the webhook is the backup, and the app polls status too.
   }
 
   res.send(buildClosePage());

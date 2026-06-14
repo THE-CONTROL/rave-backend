@@ -103,6 +103,28 @@ export const initializePayment = async (
     undefined,
   );
 
+  // Persist the order intent keyed by the payment reference, so the server can
+  // create the order the moment payment is verified (in the callback or the
+  // webhook) — without depending on the app returning to the foreground. If
+  // the user closes the browser after paying, the order is still created.
+  await prisma.pendingOrder.upsert({
+    where: { reference: payment.reference as string },
+    update: {
+      savedLocationId: dto.savedLocationId,
+      paymentMethod: dto.paymentMethod,
+      contactMethod: dto.contactMethod ?? "in-app",
+      instructions: dto.instructions ?? null,
+    },
+    create: {
+      reference: payment.reference as string,
+      userId,
+      savedLocationId: dto.savedLocationId,
+      paymentMethod: dto.paymentMethod,
+      contactMethod: dto.contactMethod ?? "in-app",
+      instructions: dto.instructions ?? null,
+    },
+  });
+
   return {
     paymentUrl: payment.authorizationUrl,
     reference: payment.reference as string,
@@ -116,6 +138,52 @@ export const initializePayment = async (
 export const verifyPayment = async (reference: string) => {
   return verifyAndCompleteTransaction(reference);
 };
+
+/**
+ * Verify a payment AND create its order server-side, from the PendingOrder
+ * intent saved at init time. Safe to call from the browser callback, the
+ * Paystack webhook, and the app — all paths are idempotent:
+ *  - verifyAndCompleteTransaction no-ops if the FIN_ record exists
+ *  - createOrder no-ops if an order with this reference already exists
+ * This is what makes a successful payment always produce an order, even if the
+ * app never returns to the foreground after the Paystack browser closes.
+ */
+export const finalizeOrderFromPayment = async (
+  reference: string,
+): Promise<{ status: string; orderId?: string }> => {
+  // 1. Verify + write the completed (FIN_) transaction. Throws if not success.
+  await verifyAndCompleteTransaction(reference);
+
+  // 2. Atomically CLAIM the order intent. deleteMany returns a count; only the
+  //    caller that actually deleted the row (count === 1) proceeds to create
+  //    the order. A simultaneous callback + webhook can't both win this, so we
+  //    never double-create even though evidenceUrl isn't a DB-unique column.
+  const pending = await prisma.pendingOrder.findUnique({
+    where: { reference },
+  });
+  if (!pending) {
+    return { status: "already_finalized" };
+  }
+
+  const claim = await prisma.pendingOrder.deleteMany({ where: { reference } });
+  if (claim.count === 0) {
+    // Another path (webhook/callback/app) claimed it first.
+    return { status: "already_finalized" };
+  }
+
+  // 3. Create the order from the claimed intent (also idempotent on reference).
+  const { createOrder } = await import("./user.service");
+  const result = await createOrder(pending.userId, {
+    savedLocationId: pending.savedLocationId,
+    paymentMethod: pending.paymentMethod as any,
+    contactMethod: pending.contactMethod as any,
+    instructions: pending.instructions ?? undefined,
+    reference,
+  });
+
+  return { status: "success", orderId: result.orderId };
+};
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Verify & Complete Transaction
@@ -218,7 +286,18 @@ export const checkPaymentStatus = async (
 
 export const handleWebhook = async (event: string, data: any) => {
   if (event === "charge.success") {
-    await verifyAndCompleteTransaction(data.id);
+    // Paystack sends our reference as data.reference. Finalize the order from
+    // the saved intent so a successful charge always produces an order, even
+    // if the customer never returned to the app. Falls back to data.id for the
+    // transaction verification path. Idempotent across callback/app/webhook.
+    const reference = data?.reference ?? data?.id;
+    try {
+      await finalizeOrderFromPayment(reference);
+    } catch {
+      // If order intent is missing (e.g. a non-order payment), still ensure
+      // the transaction itself is verified/completed.
+      await verifyAndCompleteTransaction(data.id).catch(() => undefined);
+    }
   }
 };
 

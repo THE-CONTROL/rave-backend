@@ -168,7 +168,12 @@ export const getOrderById = asyncHandler(async (req, res) => {
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 export const getAnalytics = asyncHandler(async (req, res) => {
-  ok(res, await vendorService.getAnalytics(uid(req)));
+  const { filter, startDate, endDate } = req.query as {
+    filter?: string;
+    startDate?: string;
+    endDate?: string;
+  };
+  ok(res, await vendorService.getAnalytics(uid(req), { filter, startDate, endDate }));
 });
 
 // ── Transactions ───────────────────────────────────────────────────
