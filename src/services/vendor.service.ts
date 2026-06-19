@@ -1321,6 +1321,7 @@ export const createPromotion = async (
     discountValue?: number;
     promoCode?: string;
     minimumOrder?: number;
+    maxUses?: number;
     // New fields
     appliesTo: "all" | "specific";
     productIds?: string[];

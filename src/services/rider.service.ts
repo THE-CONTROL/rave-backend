@@ -753,35 +753,25 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
         name: true,
         qty: true,
         price: true,
-        extras: true,
+        // extras + ingredients intentionally NOT selected — the rider doesn't
+        // see the customer's customizations.
         menuItem: {
-          select: { images: true, ingredients: true },
+          select: { images: true },
         },
       },
     },
   } as const;
 
-  // Shared package-summary mapper (rider sees item + extra names, not prices).
+  // Shared package-summary mapper. The rider only needs to verify they've
+  // collected the right SEALED order at pickup, so they see item names + counts
+  // (and a thumbnail) — but NOT the customer's ingredient-level customizations
+  // ("extras"), which are private consumption details with no delivery purpose.
   const mapPackage = (items: any[]) =>
     items.map((i) => {
-      const rawExtras = i.extras;
-      const extrasIds: string[] = Array.isArray(rawExtras)
-        ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
-        : rawExtras !== null && typeof rawExtras === "object"
-          ? Object.keys(rawExtras as Record<string, unknown>).filter(
-              (k) => (rawExtras as Record<string, unknown>)[k] === true,
-            )
-          : [];
-
-      const extraNames = (i.menuItem?.ingredients ?? [])
-        .filter((ing: any) => extrasIds.includes(ing.id))
-        .map((ing: any) => ing.name);
-
       return {
         name: i.name,
         quantity: i.qty,
         images: i.menuItem?.images ?? null,
-        extras: extraNames,
       };
     });
 

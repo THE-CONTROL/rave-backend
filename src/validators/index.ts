@@ -308,6 +308,7 @@ export const createPromotionSchema = z.object({
   discountValue: z.number().nonnegative().optional().default(0),
   promoCode: z.string().optional(),
   minimumOrder: z.number().nonnegative().optional().default(0),
+  maxUses: z.number().int().positive().optional(),
   // Added fields to match implementation
   appliesTo: z.enum(["all", "specific"]),
   productIds: z.array(z.string().uuid()).optional().default([]),
@@ -322,6 +323,7 @@ export const updatePromotionSchema = z.object({
   discountValue: z.number().nonnegative().optional(),
   promoCode: z.string().optional(),
   minimumOrder: z.number().nonnegative().optional(),
+  maxUses: z.number().int().positive().optional(),
   // Added fields for editing product scope
   appliesTo: z.enum(["all", "specific"]).optional(),
   productIds: z.array(z.string().uuid()).optional(),
