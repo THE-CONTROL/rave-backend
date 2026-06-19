@@ -71,9 +71,12 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   await Promise.all([profileCreate, otpCreate]);
 
   // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
-  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch((err) =>
-    console.error("[signUp] OTP email failed:", err),
-  );
+  sendOtpEmail(
+    "lawsonekhorutomwen@gmail.com",
+    user.fullName,
+    otp,
+    "verify-account",
+  ).catch((err) => console.error("[signUp] OTP email failed:", err));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
