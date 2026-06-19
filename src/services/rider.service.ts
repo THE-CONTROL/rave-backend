@@ -747,7 +747,7 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     vendor: {
       include: { user: { select: { phone: true } } },
     },
-    user: { select: { fullName: true, phone: true } },
+    user: { select: { fullName: true, phone: true, avatarUrl: true } },
     items: {
       select: {
         name: true,
