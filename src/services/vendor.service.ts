@@ -663,14 +663,14 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
       items: {
         include: { menuItem: { include: { ingredients: true } } },
       },
-      user: { select: { fullName: true, phone: true } },
+      user: { select: { fullName: true, phone: true, imageUrl: true } },
       delivery: {
         include: {
           rider: {
             select: {
               currentLat: true,
               currentLng: true,
-              user: { select: { fullName: true, phone: true } },
+              user: { select: { fullName: true, phone: true, imageUrl: true } },
             },
           },
         },
@@ -724,10 +724,22 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
       ? {
           name: rider.user?.fullName ?? "",
           phone: rider.user?.phone ?? "",
+          image: rider.user?.imageUrl ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
         }
       : null,
+    // The tracking screen reads order.restaurant.{name,image,lat,lng}. This
+    // block was missing entirely, so those were all undefined → the map pinned
+    // the store at (0,0) with no name/image. Build it from the vendor's own
+    // profile (already loaded by _requireVendor), matching the user-side shape.
+    restaurant: {
+      name: vendor.storeName,
+      image: vendor.logoUrl ?? null,
+      address: vendor.address ?? null,
+      lat: vendor.lat ?? null,
+      lng: vendor.lng ?? null,
+    },
     // Confirmation media for the vendor's order details screen: the packing
     // video the vendor recorded, and the rider's pickup/delivery proof photos.
     confirmationMedia: {
@@ -785,7 +797,12 @@ export const getAnalytics = async (
 
   const createdAtFilter =
     from || to
-      ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+      ? {
+          createdAt: {
+            ...(from ? { gte: from } : {}),
+            ...(to ? { lte: to } : {}),
+          },
+        }
       : {};
 
   const [totalTx, totalOrders, completedOrders, cancelledOrders] =
@@ -800,7 +817,9 @@ export const getAnalytics = async (
         _sum: { amount: true },
         _avg: { amount: true },
       }),
-      prisma.order.count({ where: { vendorId: vendor.id, ...createdAtFilter } }),
+      prisma.order.count({
+        where: { vendorId: vendor.id, ...createdAtFilter },
+      }),
       prisma.order.count({
         where: { vendorId: vendor.id, status: "completed", ...createdAtFilter },
       }),
