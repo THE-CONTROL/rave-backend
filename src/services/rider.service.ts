@@ -747,7 +747,7 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     vendor: {
       include: { user: { select: { phone: true } } },
     },
-    user: { select: { fullName: true, phone: true, avatarUrl: true } },
+    user: { select: { fullName: true, phone: true, imageUrl: true } },
     items: {
       select: {
         name: true,
@@ -825,7 +825,7 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
       contactMethod: order.contactMethod ?? "in-app",
       vendor: {
         name: vendor.storeName,
-        avatarUrl: vendor.logoUrl,
+        imageUrl: vendor.logoUrl,
         phone: vendor.user?.phone ?? "",
         address: vendor.address ?? "",
         details: "",
@@ -834,7 +834,7 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
       },
       customer: {
         name: order.user.fullName,
-        avatarUrl: null,
+        imageUrl: null,
         phone: order.user.phone,
         address: order.deliveryAddress,
         details: order.deliveryInstructions ?? "",
@@ -870,8 +870,8 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     contactMethod: order.contactMethod ?? "in-app",
     vendor: {
       name: vendor.storeName,
-      avatarUrl: vendor.logoUrl,
-      phone: "", // hidden until accepted
+      imageUrl: vendor.logoUrl,
+      phone: vendor.user?.phone ?? "",
       address: vendor.address ?? "",
       details: "",
       lat: vendor.lat ?? null,
@@ -879,10 +879,9 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     },
     customer: {
       name: order.user.fullName,
-      avatarUrl: null,
-      phone: "", // hidden until accepted
+      imageUrl: order.user.imageUrl ?? null,
+      phone: order.user.phone ?? "",
       address: order.deliveryAddress,
-      details: "", // instructions hidden until accepted
       lat: order.deliveryLat ?? null,
       lng: order.deliveryLng ?? null,
     },
