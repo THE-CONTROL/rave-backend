@@ -370,7 +370,7 @@ export const getProductReviews = async (
     tags: pickReviewTags(r.tags, "food"),
     verified: r.isVerified,
     orderDate: r.order?.createdAt.toISOString() ?? null,
-    proofUrls: r.proofUrls ?? [],
+    proofUrls: pickReviewTags(r.proofUrls, "food"),
   }));
 
   return { reviews: shaped, meta: buildMeta(total, page, limit) };
