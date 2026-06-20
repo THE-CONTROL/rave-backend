@@ -496,7 +496,10 @@ export const getOrders = async (
 
 export const getOrderById = async (userId: string, orderId: string) => {
   const order = await prisma.order.findFirst({
-    where: { id: orderId, userId },
+    // Resolve by EITHER the DB id (uuid) or the human-readable orderId (cuid),
+    // because the review screens navigate with order.orderId while the order
+    // list uses order.id. Matching only `id` made those screens fail to load.
+    where: { userId, OR: [{ id: orderId }, { orderId }] },
     include: {
       items: {
         include: {
@@ -504,6 +507,9 @@ export const getOrderById = async (userId: string, orderId: string) => {
             include: {
               images: true,
               ingredients: true,
+              optionGroups: {
+                include: { options: { include: { sizes: true } } },
+              },
             },
           },
         },
@@ -556,6 +562,23 @@ export const getOrderById = async (userId: string, orderId: string) => {
           name: ing.name,
           price: ing.price ?? 0,
         }));
+
+      // Also resolve any chosen reusable option-group sizes so the receipt
+      // shows (and totals) paid options like "Large" or add-ons, matching what
+      // the cart charged at checkout.
+      for (const group of item.menuItem.optionGroups ?? []) {
+        for (const opt of group.options ?? []) {
+          for (const size of opt.sizes ?? []) {
+            if (extrasIds.includes(size.id)) {
+              resolvedExtras.push({
+                id: size.id,
+                name: `${opt.name} · ${size.name}`,
+                price: size.extraPrice ?? 0,
+              });
+            }
+          }
+        }
+      }
 
       return {
         ...item,
@@ -958,6 +981,11 @@ export const getCart = async (userId: string) => {
         include: {
           images: { orderBy: { isMain: "desc" } },
           ingredients: true,
+          optionGroups: {
+            include: {
+              options: { include: { sizes: true } },
+            },
+          },
         },
       },
     },
@@ -1001,6 +1029,35 @@ export const getCart = async (userId: string) => {
           const ingPrice = ing.price ?? 0;
           extrasPrice += ingPrice;
           selectedExtras.push({ id: ing.id, name: ing.name, price: ingPrice });
+        }
+      }
+    }
+
+    // Reusable option-group selections: the customer's chosen option sizes are
+    // stored as ids inside `extras` too. Resolve them against the item's
+    // attached groups and add each chosen size's extraPrice, so a "Large" or a
+    // paid add-on actually changes what the customer is charged.
+    {
+      const selectedIds: string[] = Array.isArray(extras)
+        ? extras
+        : extras && typeof extras === "object"
+          ? Object.keys(extras).filter((k) => extras[k] === true)
+          : [];
+
+      if (selectedIds.length > 0) {
+        for (const group of item.menuItem.optionGroups ?? []) {
+          for (const opt of group.options ?? []) {
+            for (const size of opt.sizes ?? []) {
+              if (selectedIds.includes(size.id) && size.extraPrice > 0) {
+                extrasPrice += size.extraPrice;
+                selectedExtras.push({
+                  id: size.id,
+                  name: `${opt.name} · ${size.name}`,
+                  price: size.extraPrice,
+                });
+              }
+            }
+          }
         }
       }
     }
@@ -1219,6 +1276,7 @@ export const submitReview = async (
     riderRating: number;
     tags?: string[];
     comment?: string;
+    riderComment?: string;
     proofUrls?: string[];
     menuItemIds?: string[];
     resolutionPreference?: string;
@@ -1228,35 +1286,52 @@ export const submitReview = async (
   // rider has physically dropped off (delivery.delivered). Mirrors the list
   // query in myReviews.service.ts so what surfaces in the pending list can
   // actually be reviewed.
+  //
+  // Resolve by EITHER the DB id (uuid) OR the human-readable orderId (cuid).
+  // Earlier this only matched `id`, so whenever a screen passed the human
+  // orderId the lookup silently failed and the review never saved — that was
+  // the "it won't save" bug. Everything downstream now uses the resolved
+  // `order.id`, never the raw input.
   const order = await prisma.order.findFirst({
     where: {
-      id: data.orderId,
       userId,
-      OR: [
-        { status: "completed" as const },
-        { delivery: { is: { status: "delivered" } } },
-      ],
+      OR: [{ id: data.orderId }, { orderId: data.orderId }],
+      AND: {
+        OR: [
+          { status: "completed" as const },
+          { delivery: { is: { status: "delivered" } } },
+        ],
+      },
     },
   });
   if (!order)
     throw AppError.badRequest("You can only review a delivered order.");
 
   const existing = await prisma.review.findUnique({
-    where: { orderId: data.orderId },
+    where: { orderId: order.id },
   });
   if (existing)
     throw AppError.conflict("You have already reviewed this order.");
+
+  // Overall score is derived, not collected: the average of the three parts.
+  const overallRating = Math.round(
+    (data.restaurantRating + data.foodRating + data.riderRating) / 3,
+  );
 
   await prisma.review.create({
     data: {
       userId,
       vendorId: order.vendorId,
-      orderId: data.orderId,
+      orderId: order.id,
       restaurantRating: data.restaurantRating,
       foodRating: data.foodRating,
       riderRating: data.riderRating,
+      overallRating,
       tags: data.tags ?? [],
+      // `comment` is the vendor/food-facing note; `riderComment` is shown only
+      // in the rider's feed so rider feedback stays separate from food gripes.
       comment: data.comment,
+      riderComment: data.riderComment,
       proofUrls: data.proofUrls ?? [],
       images: data.proofUrls ?? [],
       menuItemIds: data.menuItemIds ?? [],
@@ -1300,6 +1375,34 @@ export const submitReview = async (
       data.restaurantRating,
       data.comment,
     );
+  }
+
+  // ── Keep the rider's cached average in sync ────────────────────────────────
+  // Now that the rider score is collected independently of the vendor score,
+  // refresh the assigned rider's cached averageRating/totalReviews so their
+  // profile stat matches what the live reviews feed computes.
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+    select: { riderId: true },
+  });
+  if (delivery?.riderId) {
+    const riderReviews = await prisma.review.findMany({
+      where: { order: { delivery: { riderId: delivery.riderId } } },
+      select: { riderRating: true },
+    });
+    const rTotal = riderReviews.length;
+    const rAvg =
+      rTotal > 0
+        ? parseFloat(
+            (
+              riderReviews.reduce((a, r) => a + r.riderRating, 0) / rTotal
+            ).toFixed(1),
+          )
+        : 0;
+    await prisma.riderProfile.update({
+      where: { id: delivery.riderId },
+      data: { averageRating: rAvg, totalReviews: rTotal },
+    });
   }
 };
 
@@ -1434,6 +1537,60 @@ export const applyReferralCode = async (
 
   await prisma.referral.create({
     data: { referrerId: referrer.id, refereeId: userId },
+  });
+};
+
+/**
+ * Pays out a referral once the referee completes a qualifying order. Called at
+ * the single delivery-completion point. Credits both the referee and the
+ * referrer with the configured bonus (recorded as `referral` transactions,
+ * which is exactly what the wallet/earnings totals aggregate) and flips the
+ * referral to "successful". Idempotent via `bonusPaid`, and never throws into
+ * the completion flow — referral payout must not block a delivery finishing.
+ */
+export const applyReferralReward = async (
+  refereeId: string,
+  orderAmount: number,
+): Promise<void> => {
+  const referral = await prisma.referral.findUnique({
+    where: { refereeId },
+  });
+  if (!referral || referral.bonusPaid) return;
+
+  const minOrder = await cfg.referral.minOrderAmount();
+  if (orderAmount < minOrder) return;
+
+  const refereeBonus = await cfg.referral.refereeBonus();
+  const referrerBonus = await cfg.referral.referrerBonus();
+
+  await prisma.$transaction(async (tx) => {
+    // Re-check inside the transaction to avoid a double payout on a race.
+    const fresh = await tx.referral.findUnique({ where: { refereeId } });
+    if (!fresh || fresh.bonusPaid) return;
+
+    await tx.referral.update({
+      where: { refereeId },
+      data: { status: "successful", bonusPaid: true },
+    });
+
+    await tx.transaction.create({
+      data: {
+        userId: refereeId,
+        type: "referral",
+        status: "completed",
+        title: "Referral Bonus",
+        amount: refereeBonus,
+      },
+    });
+    await tx.transaction.create({
+      data: {
+        userId: referral.referrerId,
+        type: "referral",
+        status: "completed",
+        title: "Referral Bonus",
+        amount: referrerBonus,
+      },
+    });
   });
 };
 

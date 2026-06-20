@@ -290,6 +290,10 @@ model MenuItem {
   categories     MenuItemCategory[]
   ingredients    MenuItemIngredient[]
   images         MenuItemImage[]
+  // Reusable option groups attached to this item. The whole point of an option
+  // group is reuse: a vendor defines e.g. "Size" or "Add-ons" once and attaches
+  // it to many items. Implicit many-to-many → join table `_MenuItemOptionGroups`.
+  optionGroups   OptionGroup[]        @relation("MenuItemOptionGroups")
   
   orderItems     OrderItem[]
   cartItems      CartItem[]
@@ -382,6 +386,10 @@ model Order {
   discountAmount       Float?
   promoCode            String?  
   contactMethod        String?       @default("in-app")
+  // Who ended the order when status = cancelled. "store" = the vendor declined
+  // it, "user" = the customer cancelled it. Lets analytics separate the
+  // "Declined" card (vendor's own rejections) from genuine customer cancels.
+  cancelledBy          String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -535,7 +543,15 @@ model Review {
   restaurantRating Int
   foodRating       Int
   riderRating      Int
+  // Headline "overall experience" score, separate from the vendor- and
+  // rider-specific scores. Nullable so historical reviews (pre-split) stay
+  // valid; new reviews from the post-delivery form always set it.
+  overallRating    Int?
   comment          String?
+  // Rider-only note, shown in the rider's review feed. Kept separate from
+  // `comment` (vendor/food-facing) so rider feedback isn't mixed with food
+  // complaints.
+  riderComment     String?
   tags             String[]
   images           String[]
   proofUrls        String[]
@@ -1048,6 +1064,7 @@ model OptionGroup {
   minQuantity      Int?
   maxQuantity      Int?
   options          OptionItem[]
+  menuItems        MenuItem[]     @relation("MenuItemOptionGroups")
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 

@@ -13,6 +13,7 @@ import {
 import { PaginationQuery } from "../types";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
+import { applyReferralReward } from "./user.service";
 import { sendOtpEmail } from "@/utils/email";
 import axios from "axios";
 import { DeliveryStatus } from "@prisma/client";
@@ -619,9 +620,7 @@ export const acceptOrder = async (
         order.vendor.storeName,
       ),
     ]);
-  } catch (err) {
-    console.error("Notification failed but transaction succeeded:", err);
-  }
+  } catch (err) {}
 
   return { success: true };
 };
@@ -834,7 +833,10 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
       },
       customer: {
         name: order.user.fullName,
-        imageUrl: null,
+        // Use the customer's real profile photo (already selected above). This
+        // was hardcoded to null, so the customer's map marker + details showed
+        // no avatar even though the data was available.
+        imageUrl: order.user.imageUrl ?? null,
         phone: order.user.phone,
         address: order.deliveryAddress,
         details: order.deliveryInstructions ?? "",
@@ -858,6 +860,10 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
   }
 
   // ── Available (not-yet-accepted) order preview ─────────────────────────────
+  // This branch is shown BEFORE the rider accepts the order, so contact details
+  // (vendor + customer phone) and the delivery instructions are deliberately
+  // withheld. The rider still gets names, addresses and coordinates so they can
+  // judge the trip distance and decide whether to accept.
   const order = availableOrder;
   const vendor = order.vendor;
 
@@ -871,7 +877,7 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     vendor: {
       name: vendor.storeName,
       imageUrl: vendor.logoUrl,
-      phone: vendor.user?.phone ?? "",
+      phone: "", // hidden until accepted
       address: vendor.address ?? "",
       details: "",
       lat: vendor.lat ?? null,
@@ -880,8 +886,9 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
     customer: {
       name: order.user.fullName,
       imageUrl: order.user.imageUrl ?? null,
-      phone: order.user.phone ?? "",
+      phone: "", // hidden until accepted
       address: order.deliveryAddress,
+      details: "", // instructions hidden until accepted
       lat: order.deliveryLat ?? null,
       lng: order.deliveryLng ?? null,
     },
@@ -1059,7 +1066,6 @@ const _disburseRiderEarnings = async (
   });
 
   if (!bankAccount) {
-    console.warn(`[PAYOUT] No primary bank account for rider ${riderId}.`);
     return;
   }
 
@@ -1099,10 +1105,6 @@ const _disburseRiderEarnings = async (
         data: { status: "completed", reference: transferCode },
       });
 
-      console.log(
-        `[PAYOUT] ₦${amount} disbursed to rider ${riderId} — transfer ${transferCode}` +
-          (attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : ""),
-      );
       return; // success — stop retrying
     } catch (err: any) {
       const reason =
@@ -1112,20 +1114,12 @@ const _disburseRiderEarnings = async (
 
       // If we've exhausted retries, log loudly and stop.
       if (attempt === RETRY_DELAYS_MS.length) {
-        console.error(
-          `[PAYOUT] All ${attempt + 1} attempts failed for rider ${riderId}, ` +
-            `order ${orderId}, ₦${amount}: ${reason}`,
-        );
         return;
       }
 
       // Otherwise wait and retry. Use the array of delays so backoff is
       // predictable and tunable (no Math.pow surprises).
       const waitMs = RETRY_DELAYS_MS[attempt];
-      console.warn(
-        `[PAYOUT] Attempt ${attempt + 1} failed for rider ${riderId} ` +
-          `(${reason}). Retrying in ${waitMs}ms.`,
-      );
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
@@ -1242,12 +1236,16 @@ export const uploadDeliveryProof = async (
   });
 
   // Bank transfer after commit (non-blocking).
-  _disburseRiderEarnings(rider.id, earnings, delivery.orderId).catch((err) => {
-    console.error(
-      `[PAYOUT] Failed to disburse to rider ${rider.id}:`,
-      err?.message,
-    );
-  });
+  _disburseRiderEarnings(rider.id, earnings, delivery.orderId).catch(
+    (err) => {},
+  );
+
+  // Pay out a pending referral once this customer's qualifying order lands.
+  // Non-blocking: a referral hiccup must never fail the delivery.
+  applyReferralReward(
+    delivery.order.userId,
+    delivery.order.totalAmount,
+  ).catch(() => {});
 
   await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
   notif.notifyRiderEarningsCredited(userId, earnings);
@@ -1415,7 +1413,7 @@ export const getRiderReviews = async (
       customerName: r.user.fullName,
       customerImage: r.user.imageUrl,
       rating: r.riderRating,
-      comment: r.comment,
+      comment: r.riderComment ?? r.comment,
       date: r.createdAt.toLocaleDateString("en-GB", {
         day: "numeric",
         month: "short",

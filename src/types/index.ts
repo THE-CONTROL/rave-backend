@@ -72,6 +72,7 @@ export interface SignUpDto {
   phoneNumber: string;
   password: string;
   role: Role;
+  referralCode?: string;
 }
 
 export interface SignInDto {

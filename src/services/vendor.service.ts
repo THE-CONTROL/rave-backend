@@ -432,6 +432,14 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
         categories: { include: { category: true } },
         images: true, // Included images
         ingredients: true, // Included ingredients with new fields
+        optionGroups: {
+          include: {
+            options: {
+              include: { sizes: { orderBy: { sortOrder: "asc" } } },
+              orderBy: { sortOrder: "asc" },
+            },
+          },
+        },
       },
     }),
     prisma.review.findMany({
@@ -449,7 +457,14 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
 
 export const createMenuItem = async (userId: string, data: any) => {
   const vendor = await _requireVendor(userId);
-  const { categoryIds, ingredients, images, ...itemData } = data;
+  const { categoryIds, ingredients, images, optionGroupIds, ...itemData } =
+    data;
+
+  // Only attach option groups that actually belong to this vendor, so a
+  // crafted request can't bolt another vendor's group onto this item.
+  const ownedGroupIds = Array.isArray(optionGroupIds)
+    ? await _filterOwnedOptionGroupIds(vendor.id, optionGroupIds)
+    : [];
 
   return prisma.menuItem.create({
     data: {
@@ -475,9 +490,31 @@ export const createMenuItem = async (userId: string, data: any) => {
       categories: {
         create: categoryIds.map((id: string) => ({ categoryId: id })),
       },
+      // Attach reusable option groups (validated to belong to this vendor).
+      ...(ownedGroupIds.length > 0
+        ? { optionGroups: { connect: ownedGroupIds.map((id) => ({ id })) } }
+        : {}),
     },
-    include: { images: true, ingredients: true, categories: true },
+    include: {
+      images: true,
+      ingredients: true,
+      categories: true,
+      optionGroups: true,
+    },
   });
+};
+
+/** Returns the subset of the given option-group ids owned by this vendor. */
+const _filterOwnedOptionGroupIds = async (
+  vendorId: string,
+  ids: string[],
+): Promise<string[]> => {
+  if (ids.length === 0) return [];
+  const owned = await prisma.optionGroup.findMany({
+    where: { vendorId, id: { in: ids } },
+    select: { id: true },
+  });
+  return owned.map((g) => g.id);
 };
 
 export const updateMenuItem = async (
@@ -499,16 +536,24 @@ export const updateMenuItem = async (
       isOptional: boolean;
       price: number;
     }>;
+    optionGroupIds?: string[];
   },
 ) => {
   const vendor = await _requireVendor(userId);
-  const { categoryIds, ingredients, images, ...updateData } = data;
+  const { categoryIds, ingredients, images, optionGroupIds, ...updateData } =
+    data;
 
   const existing = await prisma.menuItem.findFirst({
     where: { id: itemId, vendorId: vendor.id },
   });
 
   if (!existing) throw AppError.notFound("Menu item not found or unauthorized");
+
+  // Resolve the vendor-owned subset up front so the update payload stays a
+  // plain object (no inline await).
+  const ownedGroupIds = optionGroupIds
+    ? await _filterOwnedOptionGroupIds(vendor.id, optionGroupIds)
+    : undefined;
 
   return prisma.menuItem.update({
     where: { id: itemId },
@@ -549,6 +594,15 @@ export const updateMenuItem = async (
           })),
         },
       }),
+
+      // 4. Sync attached option groups — `set` replaces the whole attachment
+      //    list, so deselecting a group in the editor detaches it. Only
+      //    vendor-owned groups are honoured.
+      ...(ownedGroupIds && {
+        optionGroups: {
+          set: ownedGroupIds.map((id) => ({ id })),
+        },
+      }),
     },
     include: {
       images: true,
@@ -556,6 +610,7 @@ export const updateMenuItem = async (
       categories: {
         include: { category: true },
       },
+      optionGroups: true,
     },
   });
 };
@@ -661,7 +716,16 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
     where: { id: orderId, vendorId: vendor.id },
     include: {
       items: {
-        include: { menuItem: { include: { ingredients: true } } },
+        include: {
+          menuItem: {
+            include: {
+              ingredients: true,
+              optionGroups: {
+                include: { options: { include: { sizes: true } } },
+              },
+            },
+          },
+        },
       },
       user: { select: { fullName: true, phone: true, imageUrl: true } },
       delivery: {
@@ -700,6 +764,22 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
           name: ing.name,
           price: ing.price ?? 0,
         }));
+
+      // Surface the customer's chosen option-group sizes (e.g. "Large",
+      // add-ons) so the vendor sees exactly what to prepare.
+      for (const group of item.menuItem.optionGroups ?? []) {
+        for (const opt of group.options ?? []) {
+          for (const size of opt.sizes ?? []) {
+            if (extrasIds.includes(size.id)) {
+              resolvedExtras.push({
+                id: size.id,
+                name: `${opt.name} · ${size.name}`,
+                price: size.extraPrice ?? 0,
+              });
+            }
+          }
+        }
+      }
 
       return {
         ...item,
@@ -760,87 +840,160 @@ export const getAnalytics = async (
 ) => {
   const vendor = await _requireVendor(userId);
 
-  // Resolve the requested window so the numbers actually change when the
-  // vendor switches Today / This Week / This Month / This Year. Previously the
-  // filter was ignored and every selection showed all-time totals.
+  // ── Resolve the requested window ───────────────────────────────────────────
+  // A custom range (startDate/endDate from the calendar) always wins. The end
+  // is pushed to the end of its day so a single-day pick (16th → 16th) or an
+  // inclusive range (16th → 20th) actually covers those whole days instead of
+  // stopping at 00:00. Named filters (Today / This Week / …) are resolved when
+  // no custom range is supplied.
   const now = new Date();
+  const startOfDay = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  };
+  const endOfDay = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(23, 59, 59, 999);
+    return x;
+  };
+
   let from: Date | undefined;
+  let to: Date | undefined;
 
   if (opts?.startDate) {
-    from = new Date(opts.startDate);
+    from = startOfDay(new Date(opts.startDate));
+    // Single-day pick → endDate may be missing; fall back to the start's day.
+    to = endOfDay(new Date(opts.endDate ?? opts.startDate));
   } else {
     switch ((opts?.filter ?? "Today").toLowerCase()) {
-      case "today": {
-        from = new Date();
-        from.setHours(0, 0, 0, 0);
+      case "today":
+        from = startOfDay(now);
         break;
-      }
-      case "this week": {
-        from = new Date();
-        from.setDate(from.getDate() - 6);
-        from.setHours(0, 0, 0, 0);
+      case "this week":
+        from = startOfDay(new Date(now.getTime() - 6 * 86_400_000));
         break;
-      }
-      case "this month": {
+      case "this month":
         from = new Date(now.getFullYear(), now.getMonth(), 1);
         break;
-      }
-      case "this year": {
+      case "this year":
         from = new Date(now.getFullYear(), 0, 1);
         break;
-      }
       default:
         from = undefined; // all-time
     }
+    to = now;
   }
-  const to = opts?.endDate ? new Date(opts.endDate) : undefined;
 
-  const createdAtFilter =
-    from || to
-      ? {
-          createdAt: {
-            ...(from ? { gte: from } : {}),
-            ...(to ? { lte: to } : {}),
-          },
-        }
+  const rangeFilter = (gte?: Date, lte?: Date) =>
+    gte || lte
+      ? { createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } }
       : {};
 
-  const [totalTx, totalOrders, completedOrders, cancelledOrders] =
-    await Promise.all([
-      prisma.transaction.aggregate({
-        where: {
-          vendorId: vendor.id,
-          type: "order",
-          status: "completed",
-          ...createdAtFilter,
-        },
-        _sum: { amount: true },
-        _avg: { amount: true },
-      }),
-      prisma.order.count({
-        where: { vendorId: vendor.id, ...createdAtFilter },
-      }),
-      prisma.order.count({
-        where: { vendorId: vendor.id, status: "completed", ...createdAtFilter },
-      }),
-      prisma.order.count({
-        where: { vendorId: vendor.id, status: "cancelled", ...createdAtFilter },
-      }),
-    ]);
+  const createdAtFilter = rangeFilter(from, to);
+
+  // ── Previous window of equal length (for growth %) ─────────────────────────
+  let prevFilter: Record<string, unknown> = {};
+  if (from && to) {
+    const span = to.getTime() - from.getTime();
+    const prevTo = new Date(from.getTime() - 1);
+    const prevFrom = new Date(prevTo.getTime() - span);
+    prevFilter = rangeFilter(prevFrom, prevTo);
+  }
+
+  const IN_PROGRESS = ["accepted", "preparing", "ready", "ongoing"] as const;
+  const [
+    totalTx,
+    totalOrders,
+    completedOrders,
+    cancelledOrders,
+    declinedOrders,
+    pendingAgg,
+    prevTx,
+    prevOrders,
+  ] = await Promise.all([
+    prisma.transaction.aggregate({
+      where: {
+        vendorId: vendor.id,
+        type: "order",
+        status: "completed",
+        ...createdAtFilter,
+      },
+      _sum: { amount: true },
+      _avg: { amount: true },
+    }),
+    prisma.order.count({ where: { vendorId: vendor.id, ...createdAtFilter } }),
+    prisma.order.count({
+      where: { vendorId: vendor.id, status: "completed", ...createdAtFilter },
+    }),
+    // Customer-cancelled orders only (the vendor's declines live in the next
+    // count so the two cards don't double-count the same order).
+    prisma.order.count({
+      where: {
+        vendorId: vendor.id,
+        status: "cancelled",
+        NOT: { cancelledBy: "store" },
+        ...createdAtFilter,
+      },
+    }),
+    // Vendor-declined orders.
+    prisma.order.count({
+      where: {
+        vendorId: vendor.id,
+        status: "cancelled",
+        cancelledBy: "store",
+        ...createdAtFilter,
+      },
+    }),
+    // Pending earnings = value of orders currently in progress (accepted →
+    // ongoing) that haven't settled yet.
+    prisma.order.aggregate({
+      where: {
+        vendorId: vendor.id,
+        status: { in: IN_PROGRESS as any },
+        ...createdAtFilter,
+      },
+      _sum: { totalAmount: true },
+    }),
+    prisma.transaction.aggregate({
+      where: {
+        vendorId: vendor.id,
+        type: "order",
+        status: "completed",
+        ...prevFilter,
+      },
+      _sum: { amount: true },
+    }),
+    prisma.order.count({ where: { vendorId: vendor.id, ...prevFilter } }),
+  ]);
 
   const totalRevenue = totalTx?._sum?.amount ?? 0;
   const averageOrderValue = Math.round(totalTx?._avg?.amount ?? 0);
+  const pendingEarnings = pendingAgg?._sum?.totalAmount ?? 0;
+
+  const pct = (curr: number, prev: number) =>
+    prev > 0
+      ? Math.round(((curr - prev) / prev) * 100)
+      : curr > 0
+        ? 100
+        : 0;
 
   return {
     totalRevenue,
+    revenueGrowth: pct(totalRevenue, prevTx?._sum?.amount ?? 0),
+    pendingEarnings,
     averageOrderValue,
     totalOrders,
+    ordersGrowth: pct(totalOrders, prevOrders),
     completedOrders,
     completionRate:
       totalOrders > 0 ? Math.round((completedOrders / totalOrders) * 100) : 0,
     cancelledOrders,
     cancellationRate:
       totalOrders > 0 ? Math.round((cancelledOrders / totalOrders) * 100) : 0,
+    declinedOrders,
+    declinedRate:
+      totalOrders > 0 ? Math.round((declinedOrders / totalOrders) * 100) : 0,
   };
 };
 

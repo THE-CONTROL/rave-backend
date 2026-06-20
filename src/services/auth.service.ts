@@ -70,9 +70,29 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
   await Promise.all([profileCreate, otpCreate]);
 
+  // If the user signed up with a referral code, record the referral link now
+  // (status "pending"). The bonus is paid later, once they complete a
+  // qualifying first order. A bad/own code is ignored so it never blocks
+  // signup — the field is optional and best-effort.
+  if (dto.referralCode) {
+    try {
+      const referrer = await prisma.user.findFirst({
+        where: { referralCode: dto.referralCode },
+        select: { id: true },
+      });
+      if (referrer && referrer.id !== user.id) {
+        await prisma.referral.create({
+          data: { referrerId: referrer.id, refereeId: user.id },
+        });
+      }
+    } catch {
+      // ignore — referral is non-critical to account creation
+    }
+  }
+
   // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
-  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch((err) =>
-    console.error("[signUp] OTP email failed:", err),
+  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch(
+    (err) => {},
   );
 };
 
@@ -123,7 +143,7 @@ export const verifyEmail = async (
 
     // Welcome email is fire-and-forget — no reason to make the client wait
     sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName).catch(
-      (err) => console.error("[verifyEmail] Welcome email failed:", err),
+      (err) => {},
     );
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
@@ -205,8 +225,8 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — OTP is saved, don't crash if email provider is down
-  sendOtpEmail(user.email, user.fullName, otp, "reset-password").catch((err) =>
-    console.error("[forgotPassword] OTP email failed:", err),
+  sendOtpEmail(user.email, user.fullName, otp, "reset-password").catch(
+    (err) => {},
   );
 };
 
@@ -262,9 +282,7 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
-  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) =>
-    console.error("[resendCode] OTP email failed:", err),
-  );
+  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) => {});
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

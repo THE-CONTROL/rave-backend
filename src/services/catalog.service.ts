@@ -16,6 +16,28 @@ const tzlookup = require("tz-lookup");
 // Restaurants (public)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolves a user's current delivery coordinates from their saved locations
+ * (default first, else most recent). Returns nulls when the user has no
+ * location yet, so callers can fall back gracefully.
+ */
+const _resolveUserCoords = async (
+  userId?: string | null,
+): Promise<{ lat: number | null; lng: number | null }> => {
+  if (!userId) return { lat: null, lng: null };
+  const loc =
+    (await prisma.savedLocation.findFirst({
+      where: { userId, isDefault: true },
+      select: { latitude: true, longitude: true },
+    })) ??
+    (await prisma.savedLocation.findFirst({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: { latitude: true, longitude: true },
+    }));
+  return { lat: loc?.latitude ?? null, lng: loc?.longitude ?? null };
+};
+
 export const getRestaurantDetails = async (
   vendorId: string,
   userId?: string,
@@ -43,7 +65,27 @@ export const getRestaurantDetails = async (
     isFavorite = !!fav;
   }
 
-  return { ...vendor, isFavorite };
+  // Resolve the user's current delivery location so the delivery estimate
+  // reflects how far THIS restaurant is from them.
+  const { lat: userLat, lng: userLng } = await _resolveUserCoords(userId);
+
+  const distanceKm =
+    userLat !== null && userLng !== null && vendor.lat && vendor.lng
+      ? haversineKm(userLat, userLng, vendor.lat, vendor.lng)
+      : null;
+
+  return {
+    ...vendor,
+    isFavorite,
+    distanceKm,
+    distanceLabel: distanceKm !== null ? formatDistance(distanceKm) : null,
+    // Delivery time is derived from the distance between the restaurant and the
+    // user's location, not a fixed label. Falls back to null when we can't
+    // place the user yet (no saved location), so the UI can hide it rather than
+    // show a misleading number.
+    deliveryTime:
+      distanceKm !== null ? `${estimateEtaMinutes(distanceKm)} mins` : null,
+  };
 };
 
 // ── Backend: getRestaurantMenu ────────────────────────────────────────────────
@@ -349,6 +391,7 @@ export const search = async (
   const results: Record<string, unknown> = {};
 
   if (type === "restaurants" || type === "all") {
+    const { lat: userLat, lng: userLng } = await _resolveUserCoords(userId);
     const vendors = await prisma.vendorProfile.findMany({
       where: {
         storeName: { contains: searchTerm, mode: "insensitive" },
@@ -362,29 +405,39 @@ export const search = async (
         averageRating: true,
         totalReviews: true,
         address: true,
+        lat: true,
+        lng: true,
         positiveReviews: true,
       },
       skip,
       take: limit,
     });
 
-    results.restaurants = vendors.map((v) => ({
-      id: v.id,
-      name: v.storeName,
-      image: v.bannerUrl ?? null,
-      logo: v.logoUrl ?? null,
-      rating: v.averageRating,
-      reviewCount: v.totalReviews,
-      isOpen: v.isOpen,
-      address: v.address ?? null,
-      positiveReviews: v.positiveReviews,
-      distanceKm: null,
-      distanceLabel: null,
-      closesIn: null,
-      isYourUsual: false,
-      isFavorite: favoriteVendorIds.has(v.id),
-      deliveryTime: null,
-    }));
+    results.restaurants = vendors.map((v) => {
+      const distanceKm =
+        userLat !== null && userLng !== null && v.lat && v.lng
+          ? haversineKm(userLat, userLng, v.lat, v.lng)
+          : null;
+      return {
+        id: v.id,
+        name: v.storeName,
+        image: v.bannerUrl ?? null,
+        logo: v.logoUrl ?? null,
+        rating: v.averageRating,
+        reviewCount: v.totalReviews,
+        isOpen: v.isOpen,
+        address: v.address ?? null,
+        positiveReviews: v.positiveReviews,
+        distanceKm,
+        distanceLabel: distanceKm !== null ? formatDistance(distanceKm) : null,
+        closesIn: null,
+        isYourUsual: false,
+        isFavorite: favoriteVendorIds.has(v.id),
+        // Distance-derived delivery estimate (null when we can't place the user).
+        deliveryTime:
+          distanceKm !== null ? `${estimateEtaMinutes(distanceKm)} mins` : null,
+      };
+    });
   }
 
   if (type === "foods" || type === "all") {
@@ -719,6 +772,14 @@ export const getProductDetails = async (
       images: true, // New relation for multiple images
       categories: { include: { category: true } },
       ingredients: true, // Now uses MenuItemIngredient model
+      optionGroups: {
+        include: {
+          options: {
+            include: { sizes: { orderBy: { sortOrder: "asc" } } },
+            orderBy: { sortOrder: "asc" },
+          },
+        },
+      },
     },
   });
 

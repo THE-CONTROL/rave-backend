@@ -72,7 +72,7 @@ export const cancelOrderByUser = async (
   await prisma.$transaction(async (tx) => {
     await tx.order.update({
       where: { id: orderId },
-      data: { status: "cancelled" },
+      data: { status: "cancelled", cancelledBy: "user" },
     });
   });
 
@@ -110,11 +110,10 @@ export const advanceOrderStatus = async (
       where: { id: orderId },
       data: {
         status: newStatus,
-        // ...(newStatus === "cancelled"
-        //   ? { cancelReason, cancelledBy: "store" }
-        //   : {}),
-        // ...(newStatus === "ready" ? { pickupTime: new Date() } : {}),
-        // ...(newStatus === "completed" ? { deliveryTime: new Date() } : {}),
+        // When the vendor moves an order to "cancelled" they are declining it,
+        // so stamp who ended it. Analytics reads this to populate the
+        // "Declined Orders" card (store) separately from customer cancels.
+        ...(newStatus === "cancelled" ? { cancelledBy: "store" } : {}),
       },
     });
   });

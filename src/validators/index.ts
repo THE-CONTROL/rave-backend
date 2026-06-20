@@ -19,6 +19,12 @@ export const signUpSchema = z.object({
       "Password must contain at least one special character",
     ),
   role: z.enum(["user", "vendor", "rider"]),
+  // Optional referral code entered at signup. Trimmed/empty becomes undefined.
+  referralCode: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
 });
 
 export const signInSchema = z.object({
@@ -147,7 +153,8 @@ export const reviewSchema = z.object({
   foodRating: z.number().int().min(1).max(5),
   riderRating: z.number().int().min(1).max(5),
   tags: z.array(z.string()).optional().default([]),
-  comment: z.string().max(500).optional(),
+  comment: z.string().max(1000).optional(),
+  riderComment: z.string().max(500).optional(),
   proofUrls: z.array(z.string().url()).optional().default([]),
   menuItemIds: z.array(z.string()).optional().default([]),
   resolutionPreference: z.string().optional(),
@@ -263,6 +270,7 @@ export const createMenuItemSchema = z.object({
   ingredients: z
     .array(ingredientSchema)
     .min(1, "At least one item must be added to the meal"),
+  optionGroupIds: z.array(z.string().uuid()).optional().default([]),
 });
 
 // ── Update Menu Item Schema ──
@@ -279,6 +287,7 @@ export const updateMenuItemSchema = z.object({
   isCustomizable: z.boolean().optional(),
   categoryIds: z.array(z.string().uuid()).optional(),
   ingredients: z.array(ingredientSchema).optional(),
+  optionGroupIds: z.array(z.string().uuid()).optional(),
 });
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor — order status
