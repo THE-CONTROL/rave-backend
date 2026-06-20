@@ -1,7 +1,7 @@
 // src/services/myReviews.service.ts
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
-import { parsePagination, buildMeta } from "../utils";
+import { parsePagination, buildMeta, pickReviewTags } from "../utils";
 import { PaginationQuery } from "../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ export const getPastReviews = async (
       restaurantRating: r.restaurantRating,
       foodRating: r.foodRating,
       riderRating: r.riderRating,
-      tags: r.tags,
+      tags: pickReviewTags(r.tags, "vendor", "food", "rider"),
       comment: r.comment,
       createdAt: r.createdAt,
     };
@@ -166,7 +166,7 @@ export const getReviewDetail = async (userId: string, reviewId: string) => {
     restaurantRating: review.restaurantRating,
     foodRating: review.foodRating,
     riderRating: review.riderRating,
-    tags: review.tags,
+    tags: pickReviewTags(review.tags, "vendor", "food", "rider"),
     comment: review.comment,
     createdAt: review.createdAt,
   };
@@ -252,7 +252,7 @@ export const getReviewOrderData = async (userId: string, orderId: string) => {
           restaurantRating: order.review.restaurantRating,
           foodRating: order.review.foodRating,
           riderRating: order.review.riderRating,
-          tags: order.review.tags,
+          tags: pickReviewTags(order.review.tags, "vendor", "food", "rider"),
           comment: order.review.comment,
         }
       : null,

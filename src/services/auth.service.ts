@@ -91,12 +91,9 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   }
 
   // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
-  sendOtpEmail(
-    "lawsonekhorutomwen@gmail.com",
-    user.fullName,
-    otp,
-    "verify-account",
-  ).catch((err) => {});
+  sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch(
+    (err) => {},
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

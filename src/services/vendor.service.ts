@@ -6,14 +6,13 @@ import {
   buildMeta,
   maskAccountNumber,
   parsePagination,
+  pickReviewTags,
   resolveDateRange,
   resolveSort,
 } from "../utils";
 import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
-import { cfg } from "./config.service";
 import { format } from "date-fns"; //
-import { th } from "date-fns/locale";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile
@@ -223,6 +222,9 @@ export const getStoreSettings = async (userId: string) => {
     ...vendor,
     menuitemsNumber: menuCount,
     promotionsNumber: promoCount,
+    // Preview/mystore read `reviewNumber`; stored field is `totalReviews`.
+    // Alias it so "% positive" / order-accuracy compute instead of NaN → 0%.
+    reviewNumber: vendor.totalReviews,
   };
 };
 
@@ -972,11 +974,7 @@ export const getAnalytics = async (
   const pendingEarnings = pendingAgg?._sum?.totalAmount ?? 0;
 
   const pct = (curr: number, prev: number) =>
-    prev > 0
-      ? Math.round(((curr - prev) / prev) * 100)
-      : curr > 0
-        ? 100
-        : 0;
+    prev > 0 ? Math.round(((curr - prev) / prev) * 100) : curr > 0 ? 100 : 0;
 
   return {
     totalRevenue,
@@ -1071,6 +1069,16 @@ export const getVendorTransactions = async (
   const formattedTransactions = transactions.map((tx: any) => ({
     ...tx,
     formattedAmount: `₦${tx.amount.toLocaleString()}`,
+    formattedDate: tx.createdAt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    }),
+    formattedTime: tx.createdAt.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }),
     iconBg:
       tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
   }));
@@ -1614,7 +1622,15 @@ export const getVendorReviews = async (
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({
       where,
-      include: { user: { select: { fullName: true, imageUrl: true } } },
+      include: {
+        user: { select: { fullName: true, imageUrl: true } },
+        order: {
+          select: {
+            createdAt: true,
+            items: { select: { name: true }, take: 1 },
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
@@ -1622,7 +1638,13 @@ export const getVendorReviews = async (
     prisma.review.count({ where }),
   ]);
 
-  return { reviews, meta: buildMeta(total, page, limit) };
+  const shaped = reviews.map((r) => ({
+    ...r,
+    tags: pickReviewTags(r.tags, "vendor", "food"),
+    proofUrls: pickReviewTags(r.proofUrls, "vendor", "food"),
+  }));
+
+  return { reviews: shaped, meta: buildMeta(total, page, limit) };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

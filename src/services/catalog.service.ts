@@ -7,6 +7,7 @@ import {
   haversineKm,
   formatDistance,
   estimateEtaMinutes,
+  pickReviewTags,
 } from "../utils";
 import { PaginationQuery } from "../types";
 
@@ -36,6 +37,40 @@ const _resolveUserCoords = async (
       select: { latitude: true, longitude: true },
     }));
   return { lat: loc?.latitude ?? null, lng: loc?.longitude ?? null };
+};
+
+export const _attachItemRatings = async <T extends { id: string }>(
+  items: T[],
+): Promise<(T & { rating: number; reviewCount: number })[]> => {
+  const ids = items.map((i) => i.id);
+  const ratingByItem = new Map<string, { sum: number; count: number }>();
+
+  if (ids.length) {
+    const reviews = await prisma.review.findMany({
+      where: { menuItemIds: { hasSome: ids } },
+      select: { menuItemIds: true, foodRating: true },
+    });
+    for (const r of reviews) {
+      for (const mid of r.menuItemIds) {
+        if (!ratingByItem.has(mid)) ratingByItem.set(mid, { sum: 0, count: 0 });
+        const agg = ratingByItem.get(mid)!;
+        agg.sum += r.foodRating;
+        agg.count += 1;
+      }
+    }
+  }
+
+  return items.map((item) => {
+    const agg = ratingByItem.get(item.id);
+    const count = agg?.count ?? 0;
+    const vendorAvg = (item as any).vendor?.averageRating ?? 0;
+    return {
+      ...item,
+      rating:
+        count > 0 ? parseFloat((agg!.sum / agg!.count).toFixed(1)) : vendorAvg,
+      reviewCount: count,
+    };
+  });
 };
 
 export const getRestaurantDetails = async (
@@ -77,12 +112,11 @@ export const getRestaurantDetails = async (
   return {
     ...vendor,
     isFavorite,
+    // Frontend reads `reviewCount`; the stored field is `totalReviews`. Alias it
+    // so the count and "% positive" (positiveReviews / reviewCount) compute.
+    reviewCount: vendor.totalReviews,
     distanceKm,
     distanceLabel: distanceKm !== null ? formatDistance(distanceKm) : null,
-    // Delivery time is derived from the distance between the restaurant and the
-    // user's location, not a fixed label. Falls back to null when we can't
-    // place the user yet (no saved location), so the UI can hide it rather than
-    // show a misleading number.
     deliveryTime:
       distanceKm !== null ? `${estimateEtaMinutes(distanceKm)} mins` : null,
   };
@@ -281,6 +315,7 @@ export const getRestaurantReviews = async (
     prisma.review.count({ where }),
   ]);
 
+  // getRestaurantReviews → restaurant feed shows the vendor-side tick reasons
   const shaped = reviews.map((r) => ({
     id: r.id,
     customerName: r.user.fullName,
@@ -288,9 +323,10 @@ export const getRestaurantReviews = async (
     rating: r.restaurantRating,
     date: r.createdAt.toISOString(),
     comment: r.comment ?? "",
+    tags: pickReviewTags(r.tags, "vendor"),
     verified: r.isVerified,
     orderDate: r.order?.createdAt.toISOString() ?? null,
-    proofUrls: r.proofUrls ?? [],
+    proofUrls: pickReviewTags(r.proofUrls, "vendor"),
   }));
 
   return { reviews: shaped, meta: buildMeta(total, page, limit) };
@@ -323,6 +359,7 @@ export const getProductReviews = async (
 
   // Shape identical to getRestaurantReviews so the same review-list UI renders
   // either source without per-field guards.
+  // getProductReviews → product feed shows the food-side tick reasons
   const shaped = reviews.map((r) => ({
     id: r.id,
     customerName: r.user.fullName,
@@ -330,6 +367,7 @@ export const getProductReviews = async (
     rating: r.foodRating,
     date: r.createdAt.toISOString(),
     comment: r.comment ?? "",
+    tags: pickReviewTags(r.tags, "food"),
     verified: r.isVerified,
     orderDate: r.order?.createdAt.toISOString() ?? null,
     proofUrls: r.proofUrls ?? [],

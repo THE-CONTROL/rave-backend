@@ -436,20 +436,30 @@ export const getTransactionById = async (userId: string, txId: string) => {
 
 export const getOrders = async (
   userId: string,
-  query: PaginationQuery & {
-    status?: string;
-    range?: string;
-    sort?: string;
-  },
+  query: PaginationQuery & { status?: string; range?: string; sort?: string },
 ) => {
   const { page, limit, skip } = parsePagination(query);
+
+  // Valid OrderStatus enum values. The Completed tab used to ask for
+  // "completed,delivered", but "delivered" is a DeliveryStatus, NOT an
+  // OrderStatus — passing it into `status: { in: [...] }` makes Prisma throw,
+  // which broke the whole Completed query (so completed orders showed nowhere).
+  const VALID_ORDER_STATUSES = [
+    "new",
+    "accepted",
+    "preparing",
+    "ready",
+    "ongoing",
+    "completed",
+    "cancelled",
+  ];
 
   const statuses =
     query.status && query.status !== "all"
       ? query.status
           .split(",")
           .map((s) => s.trim())
-          .filter(Boolean)
+          .filter((s) => VALID_ORDER_STATUSES.includes(s))
       : [];
 
   const where = {
@@ -459,7 +469,6 @@ export const getOrders = async (
       : statuses.length > 1
         ? { status: { in: statuses as any[] } }
         : {}),
-    // Date-range filter from the orders filter modal ("Last 7 days", etc).
     ...resolveDateRange(query.range),
   };
 
@@ -1328,12 +1337,15 @@ export const submitReview = async (
       riderRating: data.riderRating,
       overallRating,
       tags: data.tags ?? [],
-      // `comment` is the vendor/food-facing note; `riderComment` is shown only
-      // in the rider's feed so rider feedback stays separate from food gripes.
       comment: data.comment,
       riderComment: data.riderComment,
       proofUrls: data.proofUrls ?? [],
-      images: data.proofUrls ?? [],
+      // proofUrls keeps per-part prefixes ("vendor:<url>"); images is the plain
+      // URL list for any generic viewer that doesn't care about the part.
+      images: (data.proofUrls ?? []).map((u) => {
+        const i = u.indexOf(":");
+        return i > 0 ? u.slice(i + 1) : u;
+      }),
       menuItemIds: data.menuItemIds ?? [],
       resolutionPreference: data.resolutionPreference,
     },

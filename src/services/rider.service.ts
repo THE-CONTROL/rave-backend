@@ -9,6 +9,7 @@ import {
   haversineKm,
   estimateEtaMinutes,
   formatDistance,
+  pickReviewTags,
 } from "../utils";
 import { PaginationQuery } from "../types";
 import { cfg } from "./config.service";
@@ -1242,10 +1243,9 @@ export const uploadDeliveryProof = async (
 
   // Pay out a pending referral once this customer's qualifying order lands.
   // Non-blocking: a referral hiccup must never fail the delivery.
-  applyReferralReward(
-    delivery.order.userId,
-    delivery.order.totalAmount,
-  ).catch(() => {});
+  applyReferralReward(delivery.order.userId, delivery.order.totalAmount).catch(
+    () => {},
+  );
 
   await notif.notifyOrderDelivered(delivery.order.userId, delivery.orderId);
   notif.notifyRiderEarningsCredited(userId, earnings);
@@ -1372,8 +1372,6 @@ export const getRiderReviews = async (
       ? { riderRating: ratingNum }
       : {};
 
-  const order: "asc" | "desc" = query.sort === "oldest" ? "asc" : "desc";
-
   const where = {
     order: { delivery: { riderId: rider.id } },
     ...ratingFilter,
@@ -1414,11 +1412,13 @@ export const getRiderReviews = async (
       customerImage: r.user.imageUrl,
       rating: r.riderRating,
       comment: r.riderComment ?? r.comment,
+      tags: pickReviewTags(r.tags, "rider"),
       date: r.createdAt.toLocaleDateString("en-GB", {
         day: "numeric",
         month: "short",
         year: "numeric",
       }),
+      proofUrls: pickReviewTags(r.proofUrls, "rider"),
       createdAt: r.createdAt.toISOString(),
       verified: r.isVerified,
       orderItem: r.order.items[0]?.name,

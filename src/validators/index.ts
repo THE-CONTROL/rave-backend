@@ -155,7 +155,7 @@ export const reviewSchema = z.object({
   tags: z.array(z.string()).optional().default([]),
   comment: z.string().max(1000).optional(),
   riderComment: z.string().max(500).optional(),
-  proofUrls: z.array(z.string().url()).optional().default([]),
+  proofUrls: z.array(z.string()).optional().default([]),
   menuItemIds: z.array(z.string()).optional().default([]),
   resolutionPreference: z.string().optional(),
 });

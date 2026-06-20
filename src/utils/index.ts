@@ -146,3 +146,28 @@ export const resolveDateRange = (
 /** Resolve a sort key to a Prisma createdAt order. Defaults to newest first. */
 export const resolveSort = (sort?: string): "asc" | "desc" =>
   sort === "oldest" ? "asc" : "desc";
+
+/**
+ * Review tags are stored prefixed with the part they belong to
+ * ("vendor:Friendly service", "food:Tasty", "rider:On time") so a single
+ * tags[] column can drive three separate review feeds. This pulls out the tags
+ * for one (or more) parts and strips the prefix. Legacy un-prefixed values are
+ * returned only for the "vendor" part so old reviews still show.
+ */
+export const pickReviewTags = (
+  tags: string[] | null | undefined,
+  ...parts: ("vendor" | "food" | "rider")[]
+): string[] => {
+  if (!tags?.length) return [];
+  const out: string[] = [];
+  for (const t of tags) {
+    const idx = t.indexOf(":");
+    const prefix = idx > 0 ? t.slice(0, idx) : "";
+    if (prefix && parts.includes(prefix as any)) {
+      out.push(t.slice(idx + 1));
+    } else if (!prefix && parts.includes("vendor")) {
+      out.push(t);
+    }
+  }
+  return out;
+};
