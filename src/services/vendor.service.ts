@@ -445,7 +445,12 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
       },
     }),
     prisma.review.findMany({
-      where: { menuItemIds: { has: itemId } },
+      where: {
+        OR: [
+          { menuItemIds: { has: itemId } },
+          { order: { items: { some: { menuItemId: itemId } } } },
+        ],
+      },
       include: { user: { select: { fullName: true, imageUrl: true } } },
       orderBy: { createdAt: "desc" },
       take: 10,
@@ -454,7 +459,23 @@ export const getMenuItemById = async (userId: string, itemId: string) => {
 
   if (!item) throw AppError.notFound("Menu item");
 
-  return { ...item, reviews };
+  // Shape reviews for the menu-item detail screen: expose a single `rating`
+  // (the food score, since this is a per-item view) plus the food-relevant
+  // photos and tags, with their role prefixes stripped.
+  const shapedReviews = reviews.map((r) => ({
+    id: r.id,
+    user: r.user,
+    customerName: r.user.fullName,
+    customerImage: r.user.imageUrl,
+    rating: r.foodRating,
+    comment: r.comment ?? "",
+    tags: pickReviewTags(r.tags, "food"),
+    proofUrls: pickReviewTags(r.proofUrls, "food"),
+    date: r.createdAt.toISOString(),
+    createdAt: r.createdAt.toISOString(),
+  }));
+
+  return { ...item, reviews: shapedReviews };
 };
 
 export const createMenuItem = async (userId: string, data: any) => {
@@ -736,6 +757,8 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
             select: {
               currentLat: true,
               currentLng: true,
+              averageRating: true,
+              totalReviews: true,
               user: { select: { fullName: true, phone: true, imageUrl: true } },
             },
           },
@@ -809,6 +832,8 @@ export const getVendorOrderById = async (userId: string, orderId: string) => {
           image: rider.user?.imageUrl ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
+          rating: rider.averageRating ?? 0,
+          reviewCount: rider.totalReviews ?? 0,
         }
       : null,
     // The tracking screen reads order.restaurant.{name,image,lat,lng}. This

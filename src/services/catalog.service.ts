@@ -341,7 +341,15 @@ export const getProductReviews = async (
   query: PaginationQuery,
 ) => {
   const { page, limit, skip } = parsePagination(query);
-  const where = { menuItemIds: { has: menuItemId } };
+  // Match reviews linked to this item either through the denormalized
+  // `menuItemIds` array (new reviews) or through the order's line items
+  // (covers older reviews saved before items were linked).
+  const where = {
+    OR: [
+      { menuItemIds: { has: menuItemId } },
+      { order: { items: { some: { menuItemId } } } },
+    ],
+  };
 
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({

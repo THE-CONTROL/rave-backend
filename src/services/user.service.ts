@@ -1327,6 +1327,22 @@ export const submitReview = async (
     (data.restaurantRating + data.foodRating + data.riderRating) / 3,
   );
 
+  // Link the review to every menu item on the order so it surfaces on each
+  // product's reviews feed. Earlier this relied on the client passing
+  // `menuItemIds`, which it never did — so `menuItemIds` was always empty and
+  // product/food reviews never appeared anywhere. We now derive it from the
+  // order itself (union with any explicit ids the client did send).
+  const orderItems = await prisma.orderItem.findMany({
+    where: { orderId: order.id },
+    select: { menuItemId: true },
+  });
+  const derivedMenuItemIds = Array.from(
+    new Set([
+      ...orderItems.map((i) => i.menuItemId),
+      ...(data.menuItemIds ?? []),
+    ]),
+  );
+
   await prisma.review.create({
     data: {
       userId,
@@ -1346,7 +1362,7 @@ export const submitReview = async (
         const i = u.indexOf(":");
         return i > 0 ? u.slice(i + 1) : u;
       }),
-      menuItemIds: data.menuItemIds ?? [],
+      menuItemIds: derivedMenuItemIds,
       resolutionPreference: data.resolutionPreference,
     },
   });

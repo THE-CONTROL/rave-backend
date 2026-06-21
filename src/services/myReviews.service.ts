@@ -116,6 +116,9 @@ export const getPastReviews = async (
       riderRating: r.riderRating,
       tags: pickReviewTags(r.tags, "vendor", "food", "rider"),
       comment: r.comment,
+      // Plain (prefix-stripped) photos the customer attached to the review, so
+      // the My Reviews list can show the full review, not just the ratings.
+      proofUrls: r.images ?? [],
       createdAt: r.createdAt,
     };
   });

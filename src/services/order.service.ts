@@ -179,6 +179,8 @@ export const getOrderTracking = async (userId: string, orderId: string) => {
             select: {
               currentLat: true,
               currentLng: true,
+              averageRating: true,
+              totalReviews: true,
               user: { select: { fullName: true, phone: true, imageUrl: true } },
             },
           },
@@ -226,6 +228,8 @@ export const getOrderTracking = async (userId: string, orderId: string) => {
           image: rider.user?.imageUrl ?? null,
           lat: rider.currentLat,
           lng: rider.currentLng,
+          rating: rider.averageRating ?? 0,
+          reviewCount: rider.totalReviews ?? 0,
         }
       : null,
     restaurant: {
