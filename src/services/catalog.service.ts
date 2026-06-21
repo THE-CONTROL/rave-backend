@@ -63,11 +63,12 @@ export const _attachItemRatings = async <T extends { id: string }>(
   return items.map((item) => {
     const agg = ratingByItem.get(item.id);
     const count = agg?.count ?? 0;
-    const vendorAvg = (item as any).vendor?.averageRating ?? 0;
     return {
       ...item,
-      rating:
-        count > 0 ? parseFloat((agg!.sum / agg!.count).toFixed(1)) : vendorAvg,
+      // The card shows the item's OWN food-review average (0.0 when it has no
+      // reviews yet). It must not borrow the vendor's average — that made
+      // unreviewed items all show the same number next to "0 reviews".
+      rating: count > 0 ? parseFloat((agg!.sum / agg!.count).toFixed(1)) : 0,
       reviewCount: count,
     };
   });
@@ -253,9 +254,10 @@ export const getRestaurantMenu = async (
         isOptional: ing.isOptional,
         price: ing.price ?? 0,
       })),
-      // Real per-item aggregates — falls back to the vendor average only when
-      // an item has no reviews of its own yet, so the card is never blank.
-      rating: itemReviewCount > 0 ? itemRating : vendor.averageRating,
+      // Real per-item aggregate — the item's own food-review average and
+      // count. Shows 0.0 (0) until the item has reviews; it must not borrow
+      // the vendor's average, which made every unreviewed item look rated.
+      rating: itemReviewCount > 0 ? itemRating : 0,
       reviewCount: itemReviewCount,
       // ── Set.has() — consistent with all other services ──
       isFavorite: favoriteItemIds.has(item.id),
