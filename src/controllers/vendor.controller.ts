@@ -1,6 +1,7 @@
 // src/controllers/vendor.controller.ts
 import { Request, Response } from "express";
 import * as vendorService from "../services/vendor.service";
+import * as userService from "../services/user.service";
 import { prisma } from "../config/database";
 import { AuthenticatedRequest, extractPagination } from "../types";
 import { ok, created, noContent, asyncHandler } from "../utils";
@@ -287,6 +288,13 @@ export const getReferralStats = asyncHandler(async (req, res) => {
     req.query as any,
   );
   ok(res, data, "Referral stats retrieved.", meta);
+});
+
+export const applyReferralCode = asyncHandler(async (req, res) => {
+  // The referral link is role-agnostic, so vendors reuse the same apply logic
+  // as customers — a vendor can be referred just like anyone else.
+  await userService.applyReferralCode(uid(req), req.body.code);
+  ok(res, null, "Referral code applied successfully! Your bonus is on the way.");
 });
 
 // ── Notifications ─────────────────────────────────────────────────────────────

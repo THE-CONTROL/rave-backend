@@ -1606,6 +1606,108 @@ export const applyReferralReward = async (
   });
 };
 
+/**
+ * Role-aware referral settlement. Unlike `applyReferralReward` (the fast path
+ * fired the moment a *customer* order completes), this works for every role —
+ * a rider or vendor referee never places an order, so their referrer would
+ * otherwise never be paid. The "qualifying activity" is therefore chosen per
+ * role:
+ *   • user   → a completed order worth at least the configured minimum
+ *   • rider  → at least one delivery actually dropped off
+ *   • vendor → at least one order they fulfilled to completion
+ *
+ * When the referee qualifies, both sides are credited the configured bonus
+ * (recorded as `referral` transactions so wallet/earnings totals pick them up)
+ * and the referrer is notified. Idempotent via `bonusPaid`, and it swallows
+ * its own errors so a referral hiccup can never break the caller.
+ */
+export const settleReferralIfQualified = async (
+  refereeId: string,
+): Promise<void> => {
+  try {
+    const referral = await prisma.referral.findUnique({
+      where: { refereeId },
+      include: {
+        referee: { select: { role: true, fullName: true } },
+      },
+    });
+    if (!referral || referral.bonusPaid) return;
+
+    const role = referral.referee.role;
+    let qualifies = false;
+
+    if (role === "user") {
+      const minOrder = await cfg.referral.minOrderAmount();
+      const order = await prisma.order.findFirst({
+        where: {
+          userId: refereeId,
+          status: "completed",
+          totalAmount: { gte: minOrder },
+        },
+        select: { id: true },
+      });
+      qualifies = !!order;
+    } else if (role === "rider") {
+      const delivery = await prisma.delivery.findFirst({
+        where: { status: "delivered", rider: { userId: refereeId } },
+        select: { id: true },
+      });
+      qualifies = !!delivery;
+    } else if (role === "vendor") {
+      const order = await prisma.order.findFirst({
+        where: { status: "completed", vendor: { userId: refereeId } },
+        select: { id: true },
+      });
+      qualifies = !!order;
+    }
+
+    if (!qualifies) return;
+
+    const refereeBonus = await cfg.referral.refereeBonus();
+    const referrerBonus = await cfg.referral.referrerBonus();
+
+    await prisma.$transaction(async (tx) => {
+      // Re-check inside the transaction so two job ticks can't double-pay.
+      const fresh = await tx.referral.findUnique({ where: { refereeId } });
+      if (!fresh || fresh.bonusPaid) return;
+
+      await tx.referral.update({
+        where: { refereeId },
+        data: { status: "successful", bonusPaid: true },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId: refereeId,
+          type: "referral",
+          status: "completed",
+          title: "Referral Bonus",
+          amount: refereeBonus,
+        },
+      });
+      await tx.transaction.create({
+        data: {
+          userId: referral.referrerId,
+          type: "referral",
+          status: "completed",
+          title: "Referral Bonus",
+          amount: referrerBonus,
+        },
+      });
+    });
+
+    await notif
+      .notifyReferralBonus(
+        referral.referrerId,
+        referrerBonus,
+        referral.referee.fullName,
+      )
+      .catch(() => {});
+  } catch {
+    // Referral settlement is best-effort and must never surface to the caller.
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Notifications
 // ─────────────────────────────────────────────────────────────────────────────

@@ -410,3 +410,27 @@ export const submitRiderDocuments = asyncHandler(
     );
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Referrals
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getReferralStats = asyncHandler(
+  async (req: Request, res: Response) => {
+    // Return the full stats object (meta included) as the data body so the
+    // client — which surfaces only `data` — can drive infinite pagination,
+    // mirroring the customer referral endpoint.
+    ok(res, await riderService.getRiderReferralStats(uid(req), req.query as any));
+  },
+);
+
+export const applyReferralCode = asyncHandler(
+  async (req: Request, res: Response) => {
+    await riderService.applyRiderReferralCode(uid(req), req.body.code);
+    ok(
+      res,
+      null,
+      "Referral code applied successfully! Your bonus is on the way.",
+    );
+  },
+);

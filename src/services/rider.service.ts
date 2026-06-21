@@ -1974,3 +1974,16 @@ const _resolveDocStatus = (
   if (riderStatus === "pending") return "pending";
   return "uploaded"; // Has a doc but not yet submitted/reviewed
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Referrals
+// ─────────────────────────────────────────────────────────────────────────────
+// The referral link itself is role-agnostic (every account gets a code at
+// signup and may apply someone else's), so the rider feature delegates to the
+// shared implementation in user.service rather than duplicating it. Riders are
+// settled by the role-aware referral job once they complete a delivery.
+
+export {
+  getReferralStats as getRiderReferralStats,
+  applyReferralCode as applyRiderReferralCode,
+} from "./user.service";

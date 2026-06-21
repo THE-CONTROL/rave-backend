@@ -126,6 +126,11 @@ router.get("/badges/:id", ctrl.getBadgeById);
 
 // ── Referrals ─────────────────────────────────────────────────────────────────
 router.get("/referrals", ctrl.getReferralStats);
+router.post(
+  "/referrals/apply",
+  validate(v.applyReferralSchema),
+  ctrl.applyReferralCode,
+);
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 router.get("/notifications", ctrl.getNotifications);

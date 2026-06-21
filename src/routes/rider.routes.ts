@@ -114,4 +114,12 @@ router.get("/documents", ctrl.getRiderDocuments);
 router.patch("/documents/:documentId", ctrl.uploadRiderDocument);
 router.post("/documents/submit", ctrl.submitRiderDocuments);
 
+// ── Referrals ─────────────────────────────────────────────────────────────────
+router.get("/referrals", ctrl.getReferralStats);
+router.post(
+  "/referrals/apply",
+  validate(v.applyReferralSchema),
+  ctrl.applyReferralCode,
+);
+
 export default router;
