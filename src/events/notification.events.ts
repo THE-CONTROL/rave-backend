@@ -5,7 +5,7 @@
  * This keeps services clean and keeps notification logic in one place.
  */
 
-import { NotificationSettings } from "@prisma/client";
+import { AdminRole, NotificationSettings } from "@prisma/client";
 import { prisma } from "../config/database";
 import { logger } from "../config/logger";
 import { sendPush } from "@/utils/push";
@@ -288,6 +288,35 @@ export const notifyRefundProcessed = (
 // Referral events
 // ─────────────────────────────────────────────────────────────────────────────
 
+export const notifyRefundDenied = (
+  userId: string,
+  reason?: string,
+): Promise<void> =>
+  // No category — financial resolutions are always delivered.
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Refund Request Declined",
+    message: reason
+      ? `Your refund request was declined. Reason: ${reason}`
+      : "Your refund request was declined.",
+    icon: "close-circle-outline",
+    iconBg: "#FF3B30",
+  });
+
+export const notifyPaymentFailed = (userId: string): Promise<void> =>
+  // No category — payment failures are always delivered.
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Payment Failed",
+    message: "Your payment could not be processed. Please try again.",
+    icon: "close-circle-outline",
+    iconBg: "#FF3B30",
+  });
+
 export const notifyReferralBonus = (
   userId: string,
   bonusAmount: number,
@@ -425,6 +454,69 @@ export const notifyRiderEarningsCredited = (
     price: amount,
   });
 
+export const notifyVendorWithdrawalCompleted = (
+  userId: string,
+  amount: number,
+): Promise<void> =>
+  // No category — financial confirmations are always delivered.
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Withdrawal Successful ✅",
+    message: `₦${Math.round(amount).toLocaleString()} has been sent to your bank account.`,
+    icon: "cash-outline",
+    iconBg: "#34C759",
+    price: amount,
+  });
+
+export const notifyVendorWithdrawalFailed = (
+  userId: string,
+  amount: number,
+  reason: string,
+): Promise<void> =>
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Withdrawal Failed",
+    message: `Your withdrawal of ₦${Math.round(amount).toLocaleString()} could not be completed: ${reason}`,
+    icon: "close-circle-outline",
+    iconBg: "#FF3B30",
+    price: amount,
+  });
+
+export const notifyRiderWithdrawalCompleted = (
+  userId: string,
+  amount: number,
+): Promise<void> =>
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Withdrawal Successful ✅",
+    message: `₦${Math.round(amount).toLocaleString()} has been sent to your bank account.`,
+    icon: "cash-outline",
+    iconBg: "#34C759",
+    price: amount,
+  });
+
+export const notifyRiderWithdrawalFailed = (
+  userId: string,
+  amount: number,
+  reason: string,
+): Promise<void> =>
+  push({
+    userId,
+    type: "payment",
+    subType: "general",
+    title: "Withdrawal Failed",
+    message: `Your withdrawal of ₦${Math.round(amount).toLocaleString()} could not be completed: ${reason}`,
+    icon: "close-circle-outline",
+    iconBg: "#FF3B30",
+    price: amount,
+  });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor events — extended
 // ─────────────────────────────────────────────────────────────────────────────
@@ -479,6 +571,193 @@ export const notifyCustomerRiderArrived = (
     icon: "bicycle-outline",
     iconBg: "#007AFF",
     orderId,
+  });
+
+export const notifyVendorReviewUpdated = (
+  vendorUserId: string,
+  rating: number,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "order",
+    subType: "general",
+    category: "reviews",
+    title: "A review was updated ⭐",
+    message: `A customer updated their review to ${rating} stars.`,
+    icon: "star-outline",
+    iconBg: "#FF9F0A",
+  });
+
+export const notifyVendorReviewRemoved = (
+  vendorUserId: string,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "order",
+    subType: "general",
+    category: "reviews",
+    title: "A review was removed",
+    message: "A customer removed their review.",
+    icon: "star-outline",
+    iconBg: "#FF9F0A",
+  });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Support issue events
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const notifyIssueUpdated = (
+  userId: string,
+  status: "IN_REVIEW" | "RESOLVED",
+  adminResponse?: string | null,
+): Promise<void> =>
+  // No category — support responses are always delivered.
+  push({
+    userId,
+    type: "account",
+    subType: "general",
+    title:
+      status === "RESOLVED"
+        ? "Your support ticket was resolved"
+        : "Your support ticket has an update",
+    message:
+      adminResponse ??
+      (status === "RESOLVED"
+        ? "Your reported issue has been marked resolved."
+        : "An admin is reviewing your reported issue."),
+    icon: "chatbubble-ellipses-outline",
+    iconBg: "#007AFF",
+  });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Promotion events (admin-authored, vendor-facing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const notifyVendorPromotionCreated = (
+  vendorUserId: string,
+  title: string,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "promo",
+    subType: "general",
+    category: "promos",
+    title: "New promotion added",
+    message: `An admin created the promotion "${title}" for your store.`,
+    icon: "pricetag-outline",
+    iconBg: "#7F56D9",
+  });
+
+export const notifyVendorPromotionUpdated = (
+  vendorUserId: string,
+  title: string,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "promo",
+    subType: "general",
+    category: "promos",
+    title: "Promotion updated",
+    message: `An admin updated the promotion "${title}" on your store.`,
+    icon: "pricetag-outline",
+    iconBg: "#7F56D9",
+  });
+
+export const notifyVendorPromotionDeactivated = (
+  vendorUserId: string,
+  title: string,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "promo",
+    subType: "general",
+    category: "promos",
+    title: "Promotion deactivated",
+    message: `An admin deactivated the promotion "${title}" on your store.`,
+    icon: "pricetag-outline",
+    iconBg: "#FF9F0A",
+  });
+
+export const notifyVendorPromotionDeleted = (
+  vendorUserId: string,
+  title: string,
+): Promise<void> =>
+  push({
+    userId: vendorUserId,
+    type: "promo",
+    subType: "general",
+    category: "promos",
+    title: "Promotion removed",
+    message: `An admin removed the promotion "${title}" from your store.`,
+    icon: "pricetag-outline",
+    iconBg: "#FF3B30",
+  });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin notifications
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Admins are ordinary User rows (via AdminProfile.userId) so they reuse the
+// same push() pipeline. No `category` is ever set on these — NotificationSettings
+// has no admin-specific toggles, so nothing to gate. `orderId` is deliberately
+// omitted — the deep-link `screen` resolution above only knows the user/vendor/
+// rider app routes, not the separate rave-admin web app.
+const notifyAdmins = async (
+  roles: AdminRole[],
+  payload: Omit<NotificationPayload, "userId">,
+): Promise<void> => {
+  const admins = await prisma.adminProfile.findMany({
+    where: {
+      isActive: true,
+      adminRole: { in: [...new Set([...roles, "super_admin" as AdminRole])] },
+    },
+    select: { userId: true },
+  });
+  await Promise.all(admins.map((a) => push({ ...payload, userId: a.userId })));
+};
+
+export const notifyAdminsNewRefundRequest = (
+  amount: number,
+): Promise<void> =>
+  notifyAdmins(["finance"], {
+    type: "payment",
+    subType: "general",
+    title: "New refund request",
+    message: `A refund request for ₦${Math.round(amount).toLocaleString()} needs review.`,
+    icon: "cash-outline",
+    iconBg: "#FF9F0A",
+  });
+
+export const notifyAdminsNewIssue = (category: string): Promise<void> =>
+  notifyAdmins(["support"], {
+    type: "account",
+    subType: "general",
+    title: "New support ticket",
+    message: `A new ${category} issue was submitted.`,
+    icon: "help-circle-outline",
+    iconBg: "#FF9F0A",
+  });
+
+export const notifyAdminsVendorSubmittedOnboarding = (
+  storeName: string,
+): Promise<void> =>
+  notifyAdmins(["ops"], {
+    type: "account",
+    subType: "general",
+    title: "Vendor pending review",
+    message: `${storeName} submitted their store for approval.`,
+    icon: "storefront-outline",
+    iconBg: "#007AFF",
+  });
+
+export const notifyAdminsRiderSubmittedDocuments = (): Promise<void> =>
+  notifyAdmins(["ops"], {
+    type: "account",
+    subType: "general",
+    title: "Rider pending verification",
+    message: "A rider submitted documents for verification.",
+    icon: "bicycle-outline",
+    iconBg: "#007AFF",
   });
 
 // ─────────────────────────────────────────────────────────────────────────────

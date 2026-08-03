@@ -1421,7 +1421,7 @@ export const requestRefund = async (
   });
   if (!order) throw AppError.notFound("Order");
 
-  return prisma.refundRequest.create({
+  const refund = await prisma.refundRequest.create({
     data: {
       userId,
       orderId: data.orderId,
@@ -1432,6 +1432,10 @@ export const requestRefund = async (
     },
     include: { items: true },
   });
+
+  await notif.notifyAdminsNewRefundRequest(data.amountRequested);
+
+  return refund;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { buildMeta, parsePagination } from "../utils";
 import { PaginationQuery } from "../types";
+import { notifyAdminsNewIssue } from "../events/notification.events";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reported Issues
@@ -57,7 +58,7 @@ export const submitIssue = async (
     attachments?: string[];
   },
 ) => {
-  return prisma.reportedIssue.create({
+  const issue = await prisma.reportedIssue.create({
     data: {
       userId,
       role,
@@ -69,6 +70,10 @@ export const submitIssue = async (
       transactionId: data.transactionId,
     },
   });
+
+  await notifyAdminsNewIssue(data.category);
+
+  return issue;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

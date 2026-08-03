@@ -1446,6 +1446,8 @@ export const submitVendorOnboarding = async (
     } as any,
   });
 
+  await notif.notifyAdminsVendorSubmittedOnboarding(vendor.storeName);
+
   return { success: true };
 };
 
@@ -2210,6 +2212,8 @@ export const withdrawVendorFunds = async (
         data: { status: "completed", reference: transferCode },
       });
 
+      await notif.notifyVendorWithdrawalCompleted(userId, amount);
+
       return {
         status: "completed" as const,
         transactionId: completed.id,
@@ -2226,6 +2230,7 @@ export const withdrawVendorFunds = async (
           where: { id: tx.id },
           data: { status: "failed", reason: lastError },
         });
+        await notif.notifyVendorWithdrawalFailed(userId, amount, lastError);
         throw AppError.badRequest(
           `Withdrawal could not be completed: ${lastError}. Please try again shortly.`,
         );

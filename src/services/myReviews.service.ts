@@ -3,6 +3,7 @@ import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { parsePagination, buildMeta, pickReviewTags } from "../utils";
 import { PaginationQuery } from "../types";
+import * as notif from "../events/notification.events";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pending reviews — delivered orders with no review yet
@@ -195,7 +196,20 @@ export const updateReview = async (
   });
   if (!existing) throw AppError.notFound("Review");
 
-  return prisma.review.update({ where: { id: reviewId }, data });
+  const updated = await prisma.review.update({ where: { id: reviewId }, data });
+
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: existing.vendorId },
+    select: { userId: true },
+  });
+  if (vendor) {
+    await notif.notifyVendorReviewUpdated(
+      vendor.userId,
+      updated.overallRating ?? updated.restaurantRating,
+    );
+  }
+
+  return updated;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +225,14 @@ export const deleteReview = async (
   });
   if (!existing) throw AppError.notFound("Review");
   await prisma.review.delete({ where: { id: reviewId } });
+
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: existing.vendorId },
+    select: { userId: true },
+  });
+  if (vendor) {
+    await notif.notifyVendorReviewRemoved(vendor.userId);
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

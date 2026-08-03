@@ -4,6 +4,7 @@ import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
 import { PaginationQuery } from "../../types";
 import { parsePagination, buildMeta } from "../../utils";
+import * as notif from "../../events/notification.events";
 
 export interface ListIssuesQuery extends PaginationQuery {
   status?: IssueStatus;
@@ -64,7 +65,16 @@ export const updateIssueStatus = async (id: string, status: IssueStatus) => {
     );
   }
 
-  return prisma.reportedIssue.update({ where: { id }, data: { status } });
+  const updated = await prisma.reportedIssue.update({
+    where: { id },
+    data: { status },
+  });
+
+  if (issue.status !== status && (status === "IN_REVIEW" || status === "RESOLVED")) {
+    await notif.notifyIssueUpdated(updated.userId, status, updated.adminResponse);
+  }
+
+  return updated;
 };
 
 export const respondToIssue = async (
@@ -74,7 +84,7 @@ export const respondToIssue = async (
 ) => {
   await getIssueDetail(id);
 
-  return prisma.reportedIssue.update({
+  const updated = await prisma.reportedIssue.update({
     where: { id },
     data: {
       adminResponse: message,
@@ -83,4 +93,8 @@ export const respondToIssue = async (
       status: "IN_REVIEW",
     },
   });
+
+  await notif.notifyIssueUpdated(updated.userId, "IN_REVIEW", message);
+
+  return updated;
 };

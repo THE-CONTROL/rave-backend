@@ -3,6 +3,7 @@ import { Router } from "express";
 import { authenticate, authorize } from "../../middleware/auth";
 import adminsRoutes from "./admin.admins.routes";
 import meRoutes from "./admin.me.routes";
+import notificationsRoutes from "./admin.notifications.routes";
 import configRoutes from "./admin.config.routes";
 import adsRoutes from "./admin.ads.routes";
 import onboardingRoutes from "./admin.onboarding.routes";
@@ -34,6 +35,7 @@ const router = Router();
 router.use(authenticate, authorize("admin"));
 
 router.use("/me", meRoutes);
+router.use("/notifications", notificationsRoutes);
 router.use("/admins", adminsRoutes);
 router.use("/config", configRoutes);
 router.use("/ads", adsRoutes);

@@ -7,6 +7,7 @@ import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
 import { PaginationQuery } from "../../types";
 import { parsePagination, buildMeta } from "../../utils";
+import * as notif from "../../events/notification.events";
 
 export interface ListPromotionsQuery extends PaginationQuery {
   vendorId?: string;
@@ -51,11 +52,25 @@ export const getPromotionDetail = async (id: string) => {
   return promotion;
 };
 
+const _notifyVendorForPromotion = async (
+  vendorId: string,
+  title: string,
+  fn: (userId: string, title: string) => Promise<void>,
+) => {
+  const vendor = await prisma.vendorProfile.findUnique({
+    where: { id: vendorId },
+    select: { userId: true },
+  });
+  if (vendor) await fn(vendor.userId, title);
+};
+
 export const deactivatePromotion = async (id: string) => {
   const existing = await prisma.promotion.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound("Promotion");
   if (!existing.isActive) throw AppError.badRequest("Promotion is already inactive.");
-  return prisma.promotion.update({ where: { id }, data: { isActive: false } });
+  const updated = await prisma.promotion.update({ where: { id }, data: { isActive: false } });
+  await _notifyVendorForPromotion(existing.vendorId, existing.title, notif.notifyVendorPromotionDeactivated);
+  return updated;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +130,9 @@ export const createPromotion = async (data: AdminCreatePromotionDto) => {
   const productIds = data.appliesTo === "all" ? [] : (data.productIds ?? []);
   await _assertProductsOwnedByVendor(data.vendorId, productIds);
 
-  return prisma.promotion.create({ data: { ...data, productIds } });
+  const created = await prisma.promotion.create({ data: { ...data, productIds } });
+  await notif.notifyVendorPromotionCreated(vendor.userId, created.title);
+  return created;
 };
 
 export interface AdminUpdatePromotionDto {
@@ -152,10 +169,12 @@ export const updatePromotion = async (id: string, data: AdminUpdatePromotionDto)
     throw AppError.badRequest("End date must be after start date");
   }
 
-  return prisma.promotion.update({
+  const updated = await prisma.promotion.update({
     where: { id },
     data: { ...data, ...(productIds !== undefined && { productIds }) },
   });
+  await _notifyVendorForPromotion(existing.vendorId, updated.title, notif.notifyVendorPromotionUpdated);
+  return updated;
 };
 
 export const deletePromotion = async (id: string) => {
@@ -167,4 +186,5 @@ export const deletePromotion = async (id: string) => {
     );
   }
   await prisma.promotion.delete({ where: { id } });
+  await _notifyVendorForPromotion(existing.vendorId, existing.title, notif.notifyVendorPromotionDeleted);
 };

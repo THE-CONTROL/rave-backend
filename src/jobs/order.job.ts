@@ -1,7 +1,10 @@
 // src/jobs/order.job.ts
 import { prisma } from "../config/database";
 import { logger } from "../config/logger";
-import { notifyOrderCancelled } from "../events/notification.events";
+import {
+  notifyOrderCancelled,
+  notifyAdminsNewRefundRequest,
+} from "../events/notification.events";
 
 const VENDOR_ACCEPT_TIMEOUT_MINUTES = 5;
 
@@ -62,6 +65,7 @@ export const cleanupStaleOrders = async (): Promise<void> => {
     });
 
     await notifyOrderCancelled(order.userId, order.id, "store");
+    await notifyAdminsNewRefundRequest(order.totalAmount);
 
     logger.info(
       `[job:staleOrders] Auto-cancelled order ${order.orderId} — refund request created for ₦${order.totalAmount}`,

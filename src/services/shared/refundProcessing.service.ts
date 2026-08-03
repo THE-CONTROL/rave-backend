@@ -90,4 +90,6 @@ export const processRefundDecline = async (
     where: { id: refund.id },
     data: { status: "DECLINED", updateMessage: reason ?? null },
   });
+
+  await notif.notifyRefundDenied(refund.userId, reason);
 };

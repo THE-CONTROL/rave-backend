@@ -4,6 +4,7 @@ import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { getCart } from "./user.service";
 import { cfg } from "./config.service";
+import * as notif from "../events/notification.events";
 
 // Exported so other services (e.g. vendor payouts) reuse this single
 // configured client instead of creating their own Paystack axios instance.
@@ -323,6 +324,14 @@ export const handleWebhook = async (event: string, data: any) => {
       // If order intent is missing (e.g. a non-order payment), still ensure
       // the transaction itself is verified/completed.
       await verifyAndCompleteTransaction(data.id).catch(() => undefined);
+    }
+  } else if (event === "charge.failed") {
+    const reference = data?.reference ?? data?.id;
+    const initiatedTx = await prisma.transaction.findUnique({
+      where: { reference },
+    });
+    if (initiatedTx?.userId) {
+      await notif.notifyPaymentFailed(initiatedTx.userId).catch(() => undefined);
     }
   }
 };

@@ -101,6 +101,8 @@ export const cancelOrderByUser = async (
 
   // Notify vendor too
   await notif.notifyVendorOrderCancelled(order.vendor.userId, orderId);
+
+  await notif.notifyAdminsNewRefundRequest(order.totalAmount);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,6 +205,7 @@ export const advanceOrderStatus = async (
       break;
     case "cancelled":
       await notif.notifyOrderCancelled(order.userId, orderId, "store");
+      await notif.notifyAdminsNewRefundRequest(order.totalAmount);
       break;
   }
 };

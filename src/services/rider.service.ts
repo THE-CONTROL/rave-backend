@@ -1129,6 +1129,7 @@ export const updateDeliveryStatus = async (
       delivery.orderId,
       "store",
     );
+    await notif.notifyAdminsNewRefundRequest(delivery.order.totalAmount);
   }
 
   return { success: true, newStatus };
@@ -1493,6 +1494,8 @@ export const submitDeliveryIssue = async (
       attachments: data.attachments ?? [],
     },
   });
+
+  await notif.notifyAdminsNewIssue(data.issues[0] ?? "other");
 
   return { success: true };
 };
@@ -2097,6 +2100,8 @@ export const withdrawRiderFunds = async (
         data: { status: "completed", reference: transferCode },
       });
 
+      await notif.notifyRiderWithdrawalCompleted(userId, settleAmount);
+
       return {
         status: "completed" as const,
         reference: transferCode,
@@ -2109,6 +2114,7 @@ export const withdrawRiderFunds = async (
         "Paystack transfer error";
 
       if (attempt === RIDER_WITHDRAW_RETRY_DELAYS_MS.length) {
+        await notif.notifyRiderWithdrawalFailed(userId, settleAmount, lastError);
         throw AppError.badRequest(
           `Withdrawal could not be completed: ${lastError}. Please try again shortly.`,
         );
@@ -2512,6 +2518,8 @@ export const submitRiderDocuments = async (
     where: { id: rider.id },
     data: { status: "pending", isOnline: false },
   });
+
+  await notif.notifyAdminsRiderSubmittedDocuments();
 
   return { success: true };
 };
