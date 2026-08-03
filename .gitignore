@@ -5,4 +5,3 @@ dist/
 logs/
 *.log
 .DS_Store
-prisma/migrations/
