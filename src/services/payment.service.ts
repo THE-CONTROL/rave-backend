@@ -71,8 +71,7 @@ export const initializeCheckout = async (
     amount: Math.round(Math.abs(amount) * 100),
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
-    callback_url:
-      "https://rave-backend-tvrr.onrender.com/api/v1/payments/callback",
+    callback_url: "http://localhost:3000/api/v1/payments/callback",
   });
 
   return {
@@ -211,7 +210,6 @@ export const finalizeOrderFromPayment = async (
   return { status: "success", orderId: result.orderId };
 };
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Verify & Complete Transaction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,7 +329,9 @@ export const handleWebhook = async (event: string, data: any) => {
       where: { reference },
     });
     if (initiatedTx?.userId) {
-      await notif.notifyPaymentFailed(initiatedTx.userId).catch(() => undefined);
+      await notif
+        .notifyPaymentFailed(initiatedTx.userId)
+        .catch(() => undefined);
     }
   }
 };

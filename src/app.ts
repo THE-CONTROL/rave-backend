@@ -5,8 +5,6 @@ import helmet from "helmet";
 import compression from "compression";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import path from "path";
-import fs from "fs";
 
 import { config } from "./config";
 import { logger } from "./config/logger";
@@ -58,7 +56,7 @@ app.use(
 // Stricter limiter for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 200,
   message: {
     success: false,
     message: "Too many auth attempts. Please try again in 15 minutes.",
