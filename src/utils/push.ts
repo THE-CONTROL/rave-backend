@@ -1,20 +1,26 @@
-import Expo, { ExpoPushMessage } from "expo-server-sdk";
 import { logger } from "../config/logger";
+import type { ExpoPushMessage } from "expo-server-sdk";
 
-const expo = new Expo();
+// Lazily loaded — expo-server-sdk ships an ESM build that require() can't
+// load synchronously, so we pull it in via dynamic import on first use.
+let expoInstance: any = null;
+let ExpoClass: any = null;
+
+async function getExpo() {
+  if (!expoInstance) {
+    const mod = await import("expo-server-sdk");
+    ExpoClass = mod.Expo;
+    expoInstance = new ExpoClass();
+  }
+  return expoInstance;
+}
 
 export interface PushPayload {
   token: string;
   title: string;
   body: string;
   data?: Record<string, unknown>;
-  // "default" → system sound; null → silent; any other string → a bundled
-  // sound filename (e.g. "ring.wav") that the client has packaged. Widened
-  // from the old "default" | null so user-selected sounds actually pass through.
   sound?: "default" | string | null;
-  // Android-only: the notification channel to deliver on. On Android the
-  // channel (not the payload sound) determines the sound + importance, so this
-  // must match a channel the client created for the user's chosen sound.
   channelId?: string;
   badge?: number;
 }
@@ -25,7 +31,9 @@ export interface PushPayload {
  * the business logic that triggered it.
  */
 export const sendPush = async (payload: PushPayload): Promise<void> => {
-  if (!Expo.isExpoPushToken(payload.token)) {
+  const expo = await getExpo();
+
+  if (!ExpoClass.isExpoPushToken(payload.token)) {
     logger.warn(`Invalid Expo push token: ${payload.token}`);
     return;
   }
@@ -35,8 +43,6 @@ export const sendPush = async (payload: PushPayload): Promise<void> => {
     title: payload.title,
     body: payload.body,
     data: payload.data ?? {},
-    // Respect an explicit null (silent). Only fall back to "default" when the
-    // caller didn't specify a sound at all.
     sound: payload.sound === undefined ? "default" : (payload.sound as any),
     ...(payload.channelId ? { channelId: payload.channelId } : {}),
     badge: payload.badge,
@@ -49,7 +55,6 @@ export const sendPush = async (payload: PushPayload): Promise<void> => {
       for (const ticket of tickets) {
         if (ticket.status === "error") {
           logger.warn("Push notification error", { details: ticket.details });
-          // If the token is invalid, we should remove it
           if (ticket.details?.error === "DeviceNotRegistered") {
             logger.info("Token is no longer valid — should be cleared");
           }
@@ -70,7 +75,9 @@ export const sendPushToMany = async (
   body: string,
   data?: Record<string, unknown>,
 ): Promise<void> => {
-  const valid = tokens.filter(Expo.isExpoPushToken);
+  const expo = await getExpo();
+
+  const valid = tokens.filter((t) => ExpoClass.isExpoPushToken(t));
   if (!valid.length) return;
 
   const messages: ExpoPushMessage[] = valid.map((to) => ({
