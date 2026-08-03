@@ -17,6 +17,12 @@ export const trackAdEvent = async (data: {
   event: "view" | "click" | "skip" | "complete";
   durationViewed: number;
 }) => {
+  const ad = await prisma.advertisement.findUnique({
+    where: { id: data.adId },
+    select: { id: true },
+  });
+  if (!ad) throw AppError.badRequest("Invalid ad ID");
+
   await prisma.adEvent.create({
     data: {
       adId: data.adId,

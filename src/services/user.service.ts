@@ -105,13 +105,28 @@ export const changePassword = async (
     where: { id: userId },
     data: { passwordHash: hash },
   });
+
+  // A stolen refresh token shouldn't survive a legitimate password change.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 export const deleteAccount = async (userId: string): Promise<void> => {
   await prisma.user.update({
     where: { id: userId },
-    data: { isActive: false, email: `deleted_${userId}@rave.com` },
+    data: {
+      isActive: false,
+      email: `deleted_${userId}@rave.com`,
+      // `phone` is unique at the DB level with no format constraint, so a
+      // namespaced placeholder (mirroring the email rewrite above) frees the
+      // real phone number for reuse on a future signup instead of locking it
+      // out forever.
+      phone: `deleted_${userId}`,
+    },
   });
+
+  // Deactivating the account should kill any existing session immediately,
+  // not just block future logins.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,9 +152,29 @@ export const upsertLocation = async (
   },
   locationId?: string,
 ) => {
-  const result = locationId
-    ? await prisma.savedLocation.update({ where: { id: locationId }, data })
-    : await prisma.savedLocation.create({ data: { userId, ...data } });
+  // Mirrors setPrimaryBank/setVendorPrimaryBank: when this location is being
+  // marked default, clear `isDefault` on every other one of the user's
+  // locations in the same transaction so at most one row can ever be default.
+  let result;
+  if (data.isDefault) {
+    const [, upserted] = await prisma.$transaction([
+      prisma.savedLocation.updateMany({
+        where: {
+          userId,
+          ...(locationId ? { id: { not: locationId } } : {}),
+        },
+        data: { isDefault: false },
+      }),
+      locationId
+        ? prisma.savedLocation.update({ where: { id: locationId }, data })
+        : prisma.savedLocation.create({ data: { userId, ...data } }),
+    ]);
+    result = upserted;
+  } else {
+    result = locationId
+      ? await prisma.savedLocation.update({ where: { id: locationId }, data })
+      : await prisma.savedLocation.create({ data: { userId, ...data } });
+  }
 
   await prisma.user.update({
     where: { id: userId },
@@ -855,129 +890,6 @@ export const removePromoCode = async (userId: string): Promise<void> => {
   });
 };
 
-export const processCheckout = async (
-  userId: string,
-  dto: CheckoutInput,
-): Promise<{
-  orderId: string;
-  paymentUrl?: string;
-  reference: string;
-}> => {
-  const { items, summary } = await getCart(userId);
-
-  if (!items.length || !summary) {
-    throw AppError.badRequest("Your cart is empty.");
-  }
-
-  const loc = await prisma.savedLocation.findFirst({
-    where: { id: dto.savedLocationId, userId },
-  });
-  if (!loc) throw AppError.notFound("Saved location");
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { email: true },
-  });
-  if (!user) throw AppError.notFound("User not found");
-
-  const vendorId = items[0].menuItem.vendorId;
-
-  const vendor = await prisma.vendorProfile.findUnique({
-    where: { id: vendorId },
-    select: {
-      autoAcceptOrders: true,
-      isOpen: true,
-      storeStatus: true,
-      storeName: true,
-    },
-  });
-
-  // ── Re-check vendor availability at payment time ───────────────────────────
-  // The vendor may have closed between adding to cart and checking out.
-  // Block before taking payment, not after.
-  // if (!vendor || vendor.storeStatus !== "open" || !vendor.isOpen) {
-  if (!vendor || !vendor.isOpen) {
-    throw AppError.badRequest(
-      `${vendor?.storeName ?? "This restaurant"} is now closed and isn't accepting orders. You have not been charged.`,
-    );
-  }
-
-  const initialStatus = vendor.autoAcceptOrders ? "preparing" : "new";
-
-  const order = await prisma.$transaction(async (tx) => {
-    const etaMinutes = 25;
-    const arrivalTime = new Date();
-    arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
-
-    return await tx.order.create({
-      data: {
-        userId,
-        vendorId,
-        totalAmount: summary.total,
-        deliveryFee: summary.deliveryFee || 0,
-        vat: summary.vat || 0,
-        serviceFee: summary.serviceFee || 0,
-        discountAmount:
-          (summary.discountAmount || 0) + (summary.promoDiscount || 0),
-        paymentMethod: dto.paymentMethod,
-        status: initialStatus,
-        estimatedArrival: arrivalTime,
-        etaDuration: etaMinutes,
-        evidenceUrl: "",
-        deliveryAddress: loc.description,
-        deliveryLat: loc.latitude,
-        deliveryLng: loc.longitude,
-        deliveryInstructions: dto.instructions ?? loc.instructions,
-        contactMethod: dto.contactMethod ?? "in-app",
-        items: {
-          create: items.map((item) => ({
-            menuItemId: item.menuItem.id,
-            name: item.menuItem.name,
-            qty: item.qty,
-            price: item.currentPrice,
-            extras: item.extras ?? [],
-          })),
-        },
-      },
-    });
-  });
-
-  const payment = await paymentService.initializeCheckout(
-    user.email,
-    summary.total,
-    dto.paymentMethod as "card" | "bank_transfer",
-    "order",
-    vendorId,
-    userId,
-    order.id,
-  );
-
-  // Mark promo usage + clear the applied code now that it's consumed.
-  if (summary.promoCode) {
-    await prisma.promotion.updateMany({
-      where: { promoCode: summary.promoCode, vendorId },
-      data: { timesUsed: { increment: 1 } },
-    });
-  }
-  await prisma.user.update({
-    where: { id: userId },
-    data: { appliedPromoCode: null },
-  });
-
-  await prisma.cartItem.deleteMany({ where: { userId } });
-
-  const itemsSummary = items
-    .map((i) => `${i.qty}x ${i.menuItem.name}`)
-    .join(", ");
-  notif.notifyOrderPlaced(userId, order.orderId, itemsSummary, summary.total);
-
-  return {
-    orderId: order.orderId,
-    paymentUrl: payment.authorizationUrl,
-    reference: payment.reference as string,
-  };
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Cart
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1209,8 +1121,7 @@ export const addToCart = async (
   // ── Reject if the vendor is closed or not currently accepting orders ───────
   // storeStatus must be "open" (not paused/deactivated/under_review/denied),
   // AND the vendor's manual open toggle must be on.
-  // if (item.vendor.storeStatus !== "open" || !item.vendor.isOpen) {
-  if (!item.vendor.isOpen) {
+  if (item.vendor.storeStatus !== "open" || !item.vendor.isOpen) {
     throw AppError.badRequest(
       `${item.vendor.storeName} is currently closed and isn't accepting orders right now.`,
     );
@@ -1451,7 +1362,7 @@ export const getRefunds = async (
       : {}),
   };
 
-  const [refunds, total] = await Promise.all([
+  const [refunds, total, statusCounts] = await Promise.all([
     prisma.refundRequest.findMany({
       where,
       include: { items: true },
@@ -1460,8 +1371,30 @@ export const getRefunds = async (
       take: limit,
     }),
     prisma.refundRequest.count({ where }),
+    // Per-status totals across the user's ENTIRE refund history (not just the
+    // currently-loaded page), so the filter pill counts on the frontend are
+    // always accurate instead of only reflecting whatever pages have been
+    // scrolled into view so far.
+    prisma.refundRequest.groupBy({
+      by: ["status"],
+      where: { userId },
+      _count: { _all: true },
+    }),
   ]);
-  return { refunds, meta: buildMeta(total, page, limit) };
+
+  const counts = {
+    all: 0,
+    IN_REVIEW: 0,
+    APPROVED: 0,
+    REFUNDED: 0,
+    DECLINED: 0,
+  };
+  for (const row of statusCounts) {
+    counts[row.status] = row._count._all;
+    counts.all += row._count._all;
+  }
+
+  return { refunds, meta: buildMeta(total, page, limit), counts };
 };
 
 export const getRefundById = async (userId: string, refundId: string) => {

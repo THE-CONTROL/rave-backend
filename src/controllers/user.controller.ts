@@ -1,7 +1,9 @@
 // src/controllers/user.controller.ts
 import { Request, Response } from "express";
 import * as userService from "../services/user.service";
+import * as paymentService from "../services/payment.service";
 import { prisma } from "../config/database";
+import { AppError } from "../utils/AppError";
 import { AuthenticatedRequest, extractPagination } from "../types";
 import { ok, created, noContent, asyncHandler } from "../utils";
 
@@ -107,11 +109,6 @@ export const clearCart = asyncHandler(async (req, res) => {
   noContent(res);
 });
 
-export const processCheckout = asyncHandler(async (req, res) => {
-  const result = await userService.processCheckout(uid(req), req.body);
-  created(res, result, "Order initiated. Please complete payment.");
-});
-
 // ── Remove applied promo ──────────────────────────────────────────────────────
 export const removePromo = asyncHandler(async (req, res) => {
   await userService.removePromoCode(uid(req));
@@ -121,12 +118,35 @@ export const removePromo = asyncHandler(async (req, res) => {
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 // ── Create Order ──────────────────────────────────────────────────────────────
-// Called by the frontend AFTER Paystack confirms payment success.
-// Verifies the reference hasn't already been used, creates the order,
-// clears the cart, and sends notifications.
+// Called by the frontend AFTER Paystack confirms payment success. This does
+// NOT trust the client — finalizeOrderFromPayment independently re-verifies
+// the reference with Paystack and builds the order from the server-stored
+// PendingOrder intent, not from client-supplied fields. This is also exactly
+// what the webhook calls, so a client that never returns to the app still
+// gets its order created from the same code path.
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
-  const result = await userService.createOrder(uid(req), req.body);
-  created(res, result, "Order placed successfully.");
+  const { reference } = req.body;
+  if (!reference) throw AppError.badRequest("A payment reference is required.");
+
+  const result = await paymentService.finalizeOrderFromPayment(reference);
+
+  if (result.status === "already_finalized") {
+    // The webhook (or a concurrent call) already created the order — look it
+    // up so the client still gets an orderId to navigate to.
+    const order = await prisma.order.findFirst({
+      where: { evidenceUrl: reference },
+      select: { orderId: true },
+    });
+    if (!order) {
+      throw AppError.badRequest(
+        "This payment couldn't be matched to an order. Please contact support.",
+      );
+    }
+    created(res, { orderId: order.orderId }, "Order placed successfully.");
+    return;
+  }
+
+  created(res, { orderId: result.orderId }, "Order placed successfully.");
 });
 
 export const getOrders = asyncHandler(async (req, res) => {
@@ -150,7 +170,12 @@ export const submitReview = asyncHandler(async (req, res) => {
 
 export const getRefunds = asyncHandler(async (req, res) => {
   const result = await userService.getRefunds(uid(req), req.query as any);
-  ok(res, { refunds: result.refunds }, "Refunds retrieved.", result.meta);
+  ok(
+    res,
+    { refunds: result.refunds, counts: result.counts },
+    "Refunds retrieved.",
+    result.meta,
+  );
 });
 
 export const getRefundById = asyncHandler(async (req, res) => {

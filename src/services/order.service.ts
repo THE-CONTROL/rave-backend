@@ -51,7 +51,7 @@ export const cancelOrderByUser = async (
 ): Promise<void> => {
   const order = await prisma.order.findFirst({
     where: { id: orderId, userId },
-    include: { vendor: { include: { user: true } } },
+    include: { vendor: { include: { user: true } }, items: true },
   });
 
   if (!order) throw AppError.notFound("Order");
@@ -74,6 +74,27 @@ export const cancelOrderByUser = async (
       where: { id: orderId },
       data: { status: "cancelled", cancelledBy: "user" },
     });
+
+    // The customer already paid — cancellation must create a real,
+    // reviewable RefundRequest rather than the old fake "instant wallet
+    // refund" claim. Vendors resolve this via the approve/decline endpoints.
+    await tx.refundRequest.create({
+      data: {
+        userId: order.userId,
+        orderId: order.id,
+        issue: "Order cancelled by customer",
+        description: reason
+          ? `Customer cancelled the order before it was prepared. Reason: ${reason}`
+          : "Customer cancelled the order before it was prepared.",
+        amountRequested: order.totalAmount,
+        items: {
+          create: order.items.map((item) => ({
+            name: item.name,
+            qty: item.qty,
+          })),
+        },
+      },
+    });
   });
 
   await notif.notifyOrderCancelled(userId, orderId, "user");
@@ -85,6 +106,30 @@ export const cancelOrderByUser = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor status update — drives the full order lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Shared by both "mark ready" paths (advanceOrderStatus and
+// uploadOrderEvidence) so the rider broadcast can never be skipped by
+// whichever path a vendor's client happens to take.
+const _notifyOrderReady = async (
+  customerUserId: string,
+  orderId: string,
+  vendorStoreName: string,
+  deliveryFee: number,
+): Promise<void> => {
+  await notif.notifyOrderReady(customerUserId, orderId);
+
+  const onlineRiders = await prisma.riderProfile.findMany({
+    where: { isOnline: true },
+    select: { userId: true },
+  });
+  const commission = await cfg.fees.vendorCommission();
+  await notif.notifyRiderNewOrderAvailable(
+    onlineRiders.map((r) => r.userId),
+    orderId,
+    vendorStoreName,
+    deliveryFee * (1 - commission),
+  );
+};
 
 export const advanceOrderStatus = async (
   vendorUserId: string,
@@ -100,6 +145,7 @@ export const advanceOrderStatus = async (
 
   const order = await prisma.order.findFirst({
     where: { id: orderId, vendorId: vendor.id },
+    include: { items: true },
   });
   if (!order) throw AppError.notFound("Order");
 
@@ -116,30 +162,42 @@ export const advanceOrderStatus = async (
         ...(newStatus === "cancelled" ? { cancelledBy: "store" } : {}),
       },
     });
+
+    // The customer already paid — a vendor decline/cancel still owes them a
+    // real resolution, not a fake instant refund. Create a reviewable
+    // RefundRequest the vendor (or eventually an admin) can approve/decline.
+    if (newStatus === "cancelled") {
+      await tx.refundRequest.create({
+        data: {
+          userId: order.userId,
+          orderId: order.id,
+          issue: "Order cancelled by vendor",
+          description: cancelReason
+            ? `The vendor declined/cancelled this order. Reason: ${cancelReason}`
+            : "The vendor declined/cancelled this order.",
+          amountRequested: order.totalAmount,
+          items: {
+            create: order.items.map((item) => ({
+              name: item.name,
+              qty: item.qty,
+            })),
+          },
+        },
+      });
+    }
   });
 
   // ── Fire notifications based on new status ────────────────────────────────
   switch (newStatus) {
     case "accepted":
       await notif.notifyOrderAccepted(order.userId, orderId, vendor.storeName);
+      break;
+    case "preparing":
       await notif.notifyOrderPreparing(order.userId, orderId, vendor.storeName);
       break;
-    case "ready": {
-      await notif.notifyOrderReady(order.userId, orderId);
-      // Broadcast to all online riders
-      const onlineRiders = await prisma.riderProfile.findMany({
-        where: { isOnline: true },
-        select: { userId: true },
-      });
-      const commission = await cfg.fees.vendorCommission();
-      await notif.notifyRiderNewOrderAvailable(
-        onlineRiders.map((r) => r.userId),
-        orderId,
-        vendor.storeName,
-        order.deliveryFee * (1 - commission),
-      );
+    case "ready":
+      await _notifyOrderReady(order.userId, orderId, vendor.storeName, order.deliveryFee);
       break;
-    }
     case "completed":
       await notif.notifyOrderDelivered(order.userId, orderId);
       break;
@@ -294,32 +352,35 @@ export const reorder = async (
 // Order summary for checkout preview
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Delegates to getCart's summary (the one real, actively-used implementation
+// — it accounts for extras, option-group sizes, and promos) instead of
+// re-deriving subtotal/vat/total from a naive price*qty sum, which silently
+// disagreed with what checkout actually charges whenever extras or a promo
+// were involved.
 export const calculateCartSummary = async (userId: string) => {
-  const cartItems = await prisma.cartItem.findMany({
-    where: { userId },
-    include: { menuItem: true },
-  });
+  const { summary } = await getCart(userId);
+  const vatRate = await cfg.fees.vatRate();
 
-  const subtotal = cartItems.reduce(
-    (s, ci) => s + ci.menuItem.price * ci.qty,
-    0,
-  );
-  const [vatRate, deliveryFee, serviceFee] = await Promise.all([
-    cfg.fees.vatRate(),
-    cfg.fees.deliveryBase(),
-    cfg.fees.serviceFee(),
-  ]);
-  const vat = Math.round(subtotal * vatRate);
-  const total = subtotal + vat + deliveryFee + serviceFee;
+  if (!summary) {
+    return {
+      subtotal: 0,
+      vat: 0,
+      vatRate,
+      deliveryFee: 0,
+      serviceFee: 0,
+      total: 0,
+      itemCount: 0,
+    };
+  }
 
   return {
-    subtotal,
-    vat,
+    subtotal: summary.subtotal,
+    vat: summary.vat,
     vatRate,
-    deliveryFee,
-    serviceFee,
-    total,
-    itemCount: cartItems.reduce((s, ci) => s + ci.qty, 0),
+    deliveryFee: summary.deliveryFee,
+    serviceFee: summary.serviceFee,
+    total: summary.total,
+    itemCount: summary.itemCount,
   };
 };
 
@@ -350,13 +411,16 @@ export const uploadOrderEvidence = async (
         data: {
           status: newStatus,
           packingVideoUrl: url, // ← was evidenceUrl: url, which destroyed the payment reference
-          ...(newStatus === "ready" ? { updatedAt: new Date() } : {}),
+          updatedAt: new Date(),
         },
       });
+    });
 
-      // Notify customer that the order is now ready for pickup
-      await notif.notifyOrderReady(order.userId, orderId);
-    }); // Added missing closing brace and parenthesis for transaction
+    // This is the ONLY path a vendor's client actually calls to mark an
+    // order ready (see takevideo.tsx) — it must fully replicate what
+    // advanceOrderStatus's "ready" case does, including the rider
+    // broadcast, or riders never get notified that food is ready.
+    await _notifyOrderReady(order.userId, orderId, vendor.storeName, order.deliveryFee);
   }
 
   return { success: true };

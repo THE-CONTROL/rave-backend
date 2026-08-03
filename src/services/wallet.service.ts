@@ -5,58 +5,36 @@
  * bank account name resolution (Paystack / Flutterwave stub).
  */
 
-import { prisma } from "../config/database";
-import { cfg } from "./config.service";
+import { getCart } from "./user.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Checkout preview — pricing breakdown before order is placed
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Delegates to getCart's summary (the one real, actively-used implementation
+// — it accounts for extras, option-group sizes, and promos) instead of
+// re-deriving subtotal/vat/total from a naive price*qty sum, which silently
+// disagreed with what checkout actually charges whenever extras or a promo
+// were involved.
 export const getCheckoutPreview = async (userId: string) => {
-  const cartItems = await prisma.cartItem.findMany({
-    where: { userId },
-    include: {
-      menuItem: {
-        select: {
-          name: true,
-          price: true,
-          vendorId: true,
-          images: {
-            where: { isMain: true },
-            select: { url: true },
-            take: 1,
-          },
-        },
-      },
-    },
-  });
+  const { items, summary } = await getCart(userId);
 
-  const subtotal = cartItems.reduce(
-    (s, ci) => s + ci.menuItem.price * ci.qty,
-    0,
-  );
-
-  const [vatRate, deliveryFee, serviceFee] = await Promise.all([
-    cfg.fees.vatRate(),
-    cfg.fees.deliveryBase(),
-    cfg.fees.serviceFee(),
-  ]);
-
-  const vat = Math.round(subtotal * vatRate);
-  const total = subtotal + vat + deliveryFee + serviceFee;
+  if (!summary) {
+    return { subtotal: 0, vat: 0, deliveryFee: 0, serviceFee: 0, total: 0, items: [] };
+  }
 
   return {
-    subtotal,
-    vat,
-    deliveryFee,
-    serviceFee,
-    total,
-    items: cartItems.map((ci) => ({
-      id: ci.id,
-      name: ci.menuItem.name,
-      price: ci.menuItem.price,
-      qty: ci.qty,
-      image: ci.menuItem.images[0]?.url ?? null, // ← gets the main image URL
+    subtotal: summary.subtotal,
+    vat: summary.vat,
+    deliveryFee: summary.deliveryFee,
+    serviceFee: summary.serviceFee,
+    total: summary.total,
+    items: items.map((item) => ({
+      id: item.id,
+      name: item.menuItem.name,
+      price: item.currentPrice,
+      qty: item.qty,
+      image: item.menuItem.images.find((img) => img.isMain)?.url ?? null,
     })),
   };
 };

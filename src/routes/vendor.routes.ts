@@ -97,8 +97,18 @@ router.get("/transactions/:id", ctrl.getTransactionById);
 // ── Bank Accounts ─────────────────────────────────────────────────────────────
 router.get("/banks", ctrl.getBankAccounts);
 router.post("/banks", validate(v.saveBankSchema), ctrl.saveBankAccount);
+router.get("/banks/:id", ctrl.getBankAccountById);
+router.patch(
+  "/banks/:id",
+  validate(v.vendorUpdateBankSchema),
+  ctrl.updateBankAccount,
+);
 router.patch("/banks/:id/primary", ctrl.setPrimaryBank);
 router.delete("/banks/:id", ctrl.deleteBankAccount);
+
+// ── Balance & Withdraw ─────────────────────────────────────────────────────────
+router.get("/balance", ctrl.getBalance);
+router.post("/withdraw", validate(v.vendorWithdrawSchema), ctrl.withdraw);
 
 // ── Promotions ────────────────────────────────────────────────────────────────
 router.get("/promotions", ctrl.getPromotions);
@@ -144,5 +154,14 @@ router.get("/notifications/unread-count", ctrl.getUnreadNotificationCount);
 router.patch("/push-token", validate(v.pushTokenSchema), ctrl.updatePushToken);
 
 router.get("/orders/:id/rider-location", ctrl.getRiderLocation);
+
+// ── Refunds ───────────────────────────────────────────────────────────────────
+router.get("/refunds", ctrl.getRefunds);
+router.patch("/refunds/:id/approve", ctrl.approveRefund);
+router.patch(
+  "/refunds/:id/decline",
+  validate(v.declineRefundSchema),
+  ctrl.declineRefund,
+);
 
 export default router;

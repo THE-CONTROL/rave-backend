@@ -24,6 +24,7 @@ export const cleanupStaleOrders = async (): Promise<void> => {
       orderId: true,
       userId: true,
       totalAmount: true,
+      items: { select: { name: true, qty: true } },
     },
   });
 
@@ -35,16 +36,35 @@ export const cleanupStaleOrders = async (): Promise<void> => {
         where: { id: order.id },
         data: {
           status: "cancelled",
+          cancelledBy: "store",
         },
       });
 
-      // Refund
+      // The vendor never responded in time — the customer already paid, so
+      // this needs a real, reviewable RefundRequest instead of the old fake
+      // "refunded" log line that never moved any money.
+      await tx.refundRequest.create({
+        data: {
+          userId: order.userId,
+          orderId: order.id,
+          issue: "Order auto-cancelled",
+          description:
+            "The vendor did not respond to this order in time, so it was automatically cancelled.",
+          amountRequested: order.totalAmount,
+          items: {
+            create: order.items.map((item) => ({
+              name: item.name,
+              qty: item.qty,
+            })),
+          },
+        },
+      });
     });
 
     await notifyOrderCancelled(order.userId, order.id, "store");
 
     logger.info(
-      `[job:staleOrders] Auto-cancelled order ${order.orderId} — refunded ₦${order.totalAmount}`,
+      `[job:staleOrders] Auto-cancelled order ${order.orderId} — refund request created for ₦${order.totalAmount}`,
     );
   }
 };

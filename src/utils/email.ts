@@ -102,6 +102,47 @@ export const sendOtpEmail = (
   });
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bulk send — admin broadcast emails (single user, role group, or everyone).
+// There's no job queue in this codebase, and Resend's REST API here is
+// one-recipient-per-call, so a few-thousand-recipient blast would hold an
+// HTTP request open far too long if sent synchronously in a loop. Batches
+// with a short delay between chunks instead of firing everything at once.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BULK_BATCH_SIZE = 20;
+const BULK_BATCH_DELAY_MS = 500;
+
+export const sendBulkMail = async (
+  recipients: string[],
+  subject: string,
+  html: string,
+): Promise<{ sent: number; failed: number }> => {
+  let sent = 0;
+  let failed = 0;
+
+  for (let i = 0; i < recipients.length; i += BULK_BATCH_SIZE) {
+    const batch = recipients.slice(i, i + BULK_BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map((to) => sendMail({ to, subject, html })),
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") sent++;
+      else {
+        failed++;
+        logger.error("[bulk email] delivery failed", result.reason);
+      }
+    }
+
+    if (i + BULK_BATCH_SIZE < recipients.length) {
+      await new Promise((resolve) => setTimeout(resolve, BULK_BATCH_DELAY_MS));
+    }
+  }
+
+  return { sent, failed };
+};
+
 export const sendWelcomeEmail = (to: string, name: string): Promise<void> =>
   sendMail({
     to,

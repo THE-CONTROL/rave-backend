@@ -17,6 +17,15 @@ enum Role {
   user
   vendor
   rider
+  admin
+}
+
+enum AdminRole {
+  super_admin
+  support
+  ops
+  finance
+  content
 }
 
 enum OrderStatus {
@@ -61,6 +70,7 @@ enum NotificationType {
   payment
   promo
   wallet
+  account
 }
 
 enum NotificationSubType {
@@ -147,12 +157,16 @@ model User {
   searchHistory     SearchHistory[]
   reportedIssues    ReportedIssue[]
   feedbackSubmitted Feedback[]
+  reviewReports     ReviewReport[]
 
   // Relations - vendor role
   vendorProfile        VendorProfile?
   notificationSettings NotificationSettings?
   // Relations - rider role
   riderProfile         RiderProfile?
+  // Relations - admin role
+  adminProfile         AdminProfile?
+  auditLogs            AuditLog[]
 
   @@map("users")
 }
@@ -176,6 +190,7 @@ model OtpCode {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   used      Boolean  @default(false)
+  attempts  Int      @default(0)
   createdAt DateTime @default(now())
 
   @@map("otp_codes")
@@ -211,6 +226,9 @@ model VendorProfile {
   // Status & Progress
   setupProgress    Int         @default(0) // 0-100
   storeStatus      StoreStatus @default(under_review)
+  // Admin-set reason for the current storeStatus when it's `denied` or
+  // `deactivated` (denial/suspension reason) — surfaced to the vendor.
+  storeStatusReason String?
   isOpen           Boolean     @default(false)
   autoAcceptOrders Boolean     @default(false)
 
@@ -399,6 +417,9 @@ model Order {
   transactions         Transaction[]
   refundRequests  RefundRequest[]
 
+  @@index([userId, createdAt])
+  @@index([vendorId, status])
+  @@index([status])
   @@map("orders")
 }
 
@@ -557,10 +578,30 @@ model Review {
   proofUrls        String[]
   resolutionPreference String?
   isVerified       Boolean       @default(true)
+  // Admin moderation — soft-hide instead of hard delete, since averageRating/
+  // totalReviews/positiveReviews on VendorProfile are cached aggregates
+  // recomputed from live (non-removed) reviews.
+  isRemoved        Boolean       @default(false)
+  removedReason    String?
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
+  reports          ReviewReport[]
+
   @@map("reviews")
+}
+
+model ReviewReport {
+  id         String   @id @default(uuid())
+  reviewId   String
+  review     Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reporterId String
+  reporter   User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  reason     String   // "inappropriate" | "spam" | "fake" | "other"
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  @@map("review_reports")
 }
 
 model RefundRequest {
@@ -759,6 +800,12 @@ model ReportedIssue {
   referenceId String      @unique @default(cuid())
   attachments String[]
   transactionId String?
+  // Admin support response — a single latest-response field (matching this
+  // schema's flat-field style, e.g. RefundRequest.updateMessage) rather than
+  // a full message thread.
+  adminResponse String?   @db.Text
+  respondedAt   DateTime?
+  respondedBy   String?   // admin userId
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -881,6 +928,12 @@ model RiderProfile {
   // --- New Onboarding Fields ---
   stateOfResidence     String?
   cityOfResidence      String?
+  // Rider's stated home address (onboarding step 0). Deliberately separate
+  // from `currentAddress` below, which is the GPS-derived live-location
+  // address written by onboarding step 1 and by real-time location updates —
+  // sharing one column meant step 1 silently clobbered the rider's home
+  // address moments after it was saved.
+  homeAddress          String?
   bikeVerificationType String?       // "Registration" | "Insurance" | "Roadworthiness"
   bikeDocUrl           String?       // URL for the bike document image
   plateImageUrl        String?       // URL for the photo of the license plate
@@ -907,6 +960,7 @@ model RiderProfile {
   bankAccounts   BankAccount[]
   transactions   Transaction[]
   locationHistory     RiderLocationLog[]
+  sessions            RiderSession[]
 
   @@map("rider_profiles")
 }
@@ -919,7 +973,18 @@ model RiderLocationLog {
   lng       Float
   createdAt DateTime     @default(now())
 
+  @@index([riderId, createdAt])
   @@map("rider_location_logs")
+}
+
+model RiderSession {
+  id        String       @id @default(uuid())
+  riderId   String
+  rider     RiderProfile @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  startedAt DateTime     @default(now())
+  endedAt   DateTime?
+
+  @@map("rider_sessions")
 }
 
 model Delivery {
@@ -947,6 +1012,7 @@ model Delivery {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
 
+  @@index([riderId, status])
   @@map("deliveries")
 }
 
@@ -1031,11 +1097,57 @@ model LegalDocument {
   lastUpdated String
   intro       String
   sections    Json     // LegalSection[]
+  // Versioned: publishing a new version inserts a new row (deactivating the
+  // prior one) instead of overwriting in place, so admins can see what a
+  // policy said on any given date. Only the isActive row per (slug, role) is
+  // served publicly.
+  version     Int      @default(1)
   isActive    Boolean  @default(true)
+  publishedAt DateTime?
+  createdBy   String?  // admin userId
+  createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@unique([slug, role])
+  @@unique([slug, role, version])
+  @@index([slug, role, isActive])
   @@map("legal_documents")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AdminProfile {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adminRole   AdminRole @default(support)
+  isActive    Boolean   @default(true)
+  createdBy   String?   // userId of the admin who created this admin (null for bootstrap)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("admin_profiles")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  adminId    String
+  admin      User     @relation(fields: [adminId], references: [id])
+  action     String   // e.g. "vendor.approve" | "config.update" | "refund.force_approve"
+  entityType String   // e.g. "VendorProfile" | "PlatformConfig" | "RefundRequest"
+  entityId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,11 +1,12 @@
 import crypto from "crypto";
 
 const ALGO = "aes-256-cbc";
-const KEY = crypto.scryptSync(
-  process.env.ENCRYPTION_KEY ?? "rave-secret-key",
-  "salt",
-  32,
-);
+
+if (!process.env.ENCRYPTION_KEY) {
+  throw new Error("Missing required env var: ENCRYPTION_KEY");
+}
+
+const KEY = crypto.scryptSync(process.env.ENCRYPTION_KEY, "salt", 32);
 
 export const encrypt = (text: string): string => {
   const iv = crypto.randomBytes(16);

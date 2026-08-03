@@ -10,6 +10,7 @@ import {
   pickReviewTags,
 } from "../utils";
 import { PaginationQuery } from "../types";
+import { cfg } from "./config.service";
 
 const tzlookup = require("tz-lookup");
 
@@ -127,7 +128,7 @@ export const getRestaurantDetails = async (
 
 export const getRestaurantMenu = async (
   vendorId: string,
-  query: PaginationQuery,
+  query: PaginationQuery & { search?: string },
   userId?: string | null,
   categoryId?: string,
 ) => {
@@ -162,6 +163,9 @@ export const getRestaurantMenu = async (
     vendorId,
     isActive: true,
     ...(categoryId ? { categories: { some: { categoryId } } } : {}),
+    ...(query.search
+      ? { name: { contains: query.search, mode: "insensitive" } }
+      : {}),
   };
 
   const [items, total] = await Promise.all([
@@ -437,29 +441,36 @@ export const search = async (
   }
 
   const results: Record<string, unknown> = {};
+  let totalRestaurants = 0;
+  let totalFoods = 0;
 
   if (type === "restaurants" || type === "all") {
     const { lat: userLat, lng: userLng } = await _resolveUserCoords(userId);
-    const vendors = await prisma.vendorProfile.findMany({
-      where: {
-        storeName: { contains: searchTerm, mode: "insensitive" },
-      },
-      select: {
-        id: true,
-        storeName: true,
-        logoUrl: true,
-        bannerUrl: true,
-        isOpen: true,
-        averageRating: true,
-        totalReviews: true,
-        address: true,
-        lat: true,
-        lng: true,
-        positiveReviews: true,
-      },
-      skip,
-      take: limit,
-    });
+    const vendorWhere = {
+      storeName: { contains: searchTerm, mode: "insensitive" as const },
+    };
+    const [vendors, vendorTotal] = await Promise.all([
+      prisma.vendorProfile.findMany({
+        where: vendorWhere,
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          storeName: true,
+          logoUrl: true,
+          bannerUrl: true,
+          isOpen: true,
+          averageRating: true,
+          totalReviews: true,
+          address: true,
+          lat: true,
+          lng: true,
+          positiveReviews: true,
+        },
+      }),
+      prisma.vendorProfile.count({ where: vendorWhere }),
+    ]);
+    totalRestaurants = vendorTotal;
 
     results.restaurants = vendors.map((v) => {
       const distanceKm =
@@ -489,30 +500,35 @@ export const search = async (
   }
 
   if (type === "foods" || type === "all") {
-    const foods = await prisma.menuItem.findMany({
-      where: {
-        isActive: true,
-        name: { contains: searchTerm, mode: "insensitive" },
-      },
-      include: {
-        vendor: {
-          select: {
-            id: true,
-            storeName: true,
-            logoUrl: true,
-            isOpen: true,
-            averageRating: true,
+    const foodWhere = {
+      isActive: true,
+      name: { contains: searchTerm, mode: "insensitive" as const },
+    };
+    const [foods, foodTotal] = await Promise.all([
+      prisma.menuItem.findMany({
+        where: foodWhere,
+        include: {
+          vendor: {
+            select: {
+              id: true,
+              storeName: true,
+              logoUrl: true,
+              isOpen: true,
+              averageRating: true,
+            },
+          },
+          images: { orderBy: { isMain: "desc" } },
+          ingredients: true,
+          categories: {
+            include: { category: { select: { id: true, name: true } } },
           },
         },
-        images: { orderBy: { isMain: "desc" } },
-        ingredients: true,
-        categories: {
-          include: { category: { select: { id: true, name: true } } },
-        },
-      },
-      skip,
-      take: limit,
-    });
+        skip,
+        take: limit,
+      }),
+      prisma.menuItem.count({ where: foodWhere }),
+    ]);
+    totalFoods = foodTotal;
 
     results.foods = foods.map((f) => ({
       id: f.id,
@@ -550,7 +566,18 @@ export const search = async (
     }));
   }
 
-  return { ...results, meta: buildMeta(0, page, limit) };
+  // For a single-type search, meta.total/totalPages reflects that type's
+  // count so `hasNextPage` in the infinite-query frontend works correctly.
+  // For "all" (not currently used by any screen, which always searches a
+  // single tab) we sum both counts as a reasonable approximation.
+  const total =
+    type === "restaurants"
+      ? totalRestaurants
+      : type === "foods"
+        ? totalFoods
+        : totalRestaurants + totalFoods;
+
+  return { ...results, meta: buildMeta(total, page, limit) };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -571,6 +598,7 @@ export const getItemsByCategory = async (
     minPrice?: string;
     maxPrice?: string;
     isBestSeller?: string;
+    search?: string;
   },
   userId?: string | null,
 ) => {
@@ -597,6 +625,9 @@ export const getItemsByCategory = async (
         },
       },
     },
+    ...(query.search
+      ? { name: { contains: query.search, mode: "insensitive" as const } }
+      : {}),
     ...(query.minPrice ? { price: { gte: parseFloat(query.minPrice) } } : {}),
     ...(query.maxPrice
       ? {
@@ -663,11 +694,15 @@ export const getNearbyRestaurants = async (
     radiusKm?: string;
     isOpen?: string;
     minRating?: string;
+    search?: string;
+    sort?: string;
   },
   userId?: string | null,
 ) => {
   const { page, limit, skip } = parsePagination(query);
-  const radiusKm = query.radiusKm ? parseFloat(query.radiusKm) : 10;
+  const radiusKm = query.radiusKm
+    ? parseFloat(query.radiusKm)
+    : await cfg.catalog.vendorRadiusKm();
 
   // ── User coordinates from default location ─────────────────────────────────
   let userLat: number | null = null;
@@ -722,6 +757,12 @@ export const getNearbyRestaurants = async (
   // ── Build filter where clause ──────────────────────────────────────────────
   const where: any = {
     ...(query.isOpen === "true" ? { isOpen: true } : {}),
+    ...(query.minRating
+      ? { averageRating: { gte: Number(query.minRating) } }
+      : {}),
+    ...(query.search
+      ? { storeName: { contains: query.search, mode: "insensitive" } }
+      : {}),
   };
 
   const vendors = await prisma.vendorProfile.findMany({
@@ -757,7 +798,22 @@ export const getNearbyRestaurants = async (
         )
       : withDistance;
 
+  // ── Sort ────────────────────────────────────────────────────────────────────
+  // "closest"/"fastest" (fastest is proxied by distance — we don't track a
+  // separate delivery-speed metric) sort purely by distance. "highest" sorts
+  // purely by rating. Anything else (including the default "recommended" and
+  // the unsupported "lowest-fee" — there's no delivery-fee field on the
+  // vendor — falls back to the combined distance+rating heuristic below.
   const sorted = filtered.sort((a, b) => {
+    if (query.sort === "closest" || query.sort === "fastest") {
+      if (a.distanceKm === null && b.distanceKm === null) return 0;
+      if (a.distanceKm === null) return 1;
+      if (b.distanceKm === null) return -1;
+      return a.distanceKm - b.distanceKm;
+    }
+    if (query.sort === "highest") {
+      return b.averageRating - a.averageRating;
+    }
     if (
       a.distanceKm !== null &&
       b.distanceKm !== null &&
@@ -924,7 +980,9 @@ export const getMealPicks = async (
     meal?: "breakfast" | "lunch" | "dinner";
   } = {},
 ) => {
-  const radiusKm = opts.radiusKm ? parseFloat(opts.radiusKm) : 10;
+  const radiusKm = opts.radiusKm
+    ? parseFloat(opts.radiusKm)
+    : await cfg.catalog.vendorRadiusKm();
 
   // Resolve the user's saved location first — used for both the meal-time
   // timezone decision and the radius filter further below.

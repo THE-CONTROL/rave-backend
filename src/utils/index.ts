@@ -1,4 +1,5 @@
 // src/utils/index.ts
+import { randomInt } from "crypto";
 import { Response, Request, NextFunction, RequestHandler } from "express";
 import { ApiResponse, PaginationMeta, PaginationQuery } from "../types";
 
@@ -68,7 +69,7 @@ export const buildMeta = (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const generateOtp = (length = 6): string =>
-  Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
+  Array.from({ length }, () => randomInt(0, 10)).join("");
 
 export const otpExpiresAt = (minutes = 10): Date => {
   const d = new Date();

@@ -21,7 +21,7 @@ type SettingsKey = keyof Omit<
 
 interface NotificationPayload {
   userId: string;
-  type: "order" | "rider" | "payment" | "promo" | "wallet";
+  type: "order" | "rider" | "payment" | "promo" | "wallet" | "account";
   subType: "placed" | "approaching" | "delivered" | "general";
   title: string;
   message: string;
@@ -45,12 +45,15 @@ const push = async (payload: NotificationPayload): Promise<void> => {
 
     const notification = await prisma.notification.create({ data: record });
 
-    // Look up both push token AND settings in one query
+    // Look up push token, settings, AND role in one query. `role` drives the
+    // deep-link target below — the three client apps map 1:1 to a role
+    // (user/vendor → Rave, rider → RideWithRave).
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
       select: {
         pushToken: true,
         notificationSettings: true,
+        role: true,
       },
     });
 
@@ -89,6 +92,25 @@ const push = async (payload: NotificationPayload): Promise<void> => {
       channelId = `sound_${userSoundCode}`;
     }
 
+    // Deep-link target for tapping the OS push notification, mirroring the
+    // exact routes wired up for tapping the in-app notification list row in
+    // each app. Only notifications carrying an orderId (order/delivery
+    // related) get a destination — payment/promo notifications with no
+    // orderId leave `screen` undefined and the client just opens the app
+    // without navigating, same as today.
+    let screen: string | undefined;
+    let screenParams: Record<string, string> | undefined;
+    if (payload.orderId) {
+      if (user.role === "vendor") {
+        screen = "/authenticated/vendor/transactions/orders/[id]/orderdetails";
+      } else if (user.role === "rider") {
+        screen = "/authenticated/deliveries/[id]/details";
+      } else {
+        screen = "/authenticated/user/transactions/orders/[id]/details";
+      }
+      screenParams = { id: payload.orderId };
+    }
+
     sendPush({
       token: user.pushToken,
       title: payload.title,
@@ -100,6 +122,8 @@ const push = async (payload: NotificationPayload): Promise<void> => {
         type: payload.type,
         subType: payload.subType,
         orderId: payload.orderId,
+        screen,
+        params: screenParams,
       },
     }).catch((err) => logger.error("[push] delivery failed", err));
   } catch (err) {
@@ -194,7 +218,7 @@ export const notifyOrderCancelled = (
       cancelledBy === "store" ? "Order Cancelled by Store" : "Order Cancelled",
     message:
       cancelledBy === "store"
-        ? "The store cancelled your order. A full refund will be processed to your wallet."
+        ? "The store cancelled your order. A refund request has been submitted and will be reviewed."
         : "Your order has been cancelled.",
     icon: "close-circle-outline",
     iconBg: "#FF3B30",
@@ -255,8 +279,8 @@ export const notifyRefundProcessed = (
     type: "payment",
     subType: "general",
     title: "Refund Processed ✅",
-    message: `₦${amount.toLocaleString()} has been added to your wallet.`,
-    icon: "wallet-outline",
+    message: `₦${amount.toLocaleString()} has been refunded to your original payment method.`,
+    icon: "cash-outline",
     iconBg: "#34C759",
   });
 
@@ -439,3 +463,101 @@ export const notifyVendorRiderArrived = (
     iconBg: "#007AFF",
     orderId,
   });
+
+export const notifyCustomerRiderArrived = (
+  customerUserId: string,
+  orderId: string,
+  riderName: string,
+): Promise<void> =>
+  push({
+    userId: customerUserId,
+    type: "rider",
+    subType: "approaching",
+    category: "riderArrival",
+    title: "Your rider has arrived 🛵",
+    message: `${riderName} is here with your order.`,
+    icon: "bicycle-outline",
+    iconBg: "#007AFF",
+    orderId,
+  });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — account status events
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VENDOR_STATUS_COPY: Record<string, { title: string; message: string; icon: string; iconBg: string }> = {
+  open: {
+    title: "Your store is approved! 🎉",
+    message: "Your store has been approved and is now visible to customers.",
+    icon: "checkmark-circle-outline",
+    iconBg: "#34C759",
+  },
+  denied: {
+    title: "Store application declined",
+    message: "Your store application wasn't approved. Check your store status for details.",
+    icon: "close-circle-outline",
+    iconBg: "#FF3B30",
+  },
+  deactivated: {
+    title: "Your store has been suspended",
+    message: "Your store has been suspended by the Rave team. Check your store status for details.",
+    icon: "alert-circle-outline",
+    iconBg: "#FF3B30",
+  },
+};
+
+// No category — account-status changes are always delivered, the vendor can't opt out.
+export const notifyVendorStatusChanged = (
+  vendorUserId: string,
+  status: "open" | "denied" | "deactivated",
+  reason?: string,
+): Promise<void> => {
+  const copy = VENDOR_STATUS_COPY[status];
+  return push({
+    userId: vendorUserId,
+    type: "account",
+    subType: "general",
+    title: copy.title,
+    message: reason ? `${copy.message} Reason: ${reason}` : copy.message,
+    icon: copy.icon,
+    iconBg: copy.iconBg,
+  });
+};
+
+const RIDER_STATUS_COPY: Record<string, { title: string; message: string; icon: string; iconBg: string }> = {
+  verified: {
+    title: "You're verified! 🎉",
+    message: "Your documents have been verified. You can now go online and start accepting deliveries.",
+    icon: "checkmark-circle-outline",
+    iconBg: "#34C759",
+  },
+  suspended: {
+    title: "Your account has been suspended",
+    message: "Your rider account has been suspended by the Rave team.",
+    icon: "alert-circle-outline",
+    iconBg: "#FF3B30",
+  },
+  not_verified: {
+    title: "Document verification needed",
+    message: "One of your submitted documents was rejected and needs to be resubmitted.",
+    icon: "alert-circle-outline",
+    iconBg: "#FF9F0A",
+  },
+};
+
+export const notifyRiderStatusChanged = (
+  riderUserId: string,
+  status: "verified" | "suspended" | "not_verified",
+  reason?: string,
+): Promise<void> => {
+  const copy = RIDER_STATUS_COPY[status];
+  return push({
+    userId: riderUserId,
+    type: "account",
+    subType: "general",
+    title: copy.title,
+    message: reason ? `${copy.message} Reason: ${reason}` : copy.message,
+    icon: copy.icon,
+    iconBg: copy.iconBg,
+  });
+};

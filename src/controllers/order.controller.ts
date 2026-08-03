@@ -19,7 +19,7 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
   ok(
     res,
     null,
-    "Order cancelled. A full refund has been processed to your wallet.",
+    "Order cancelled. A refund request has been submitted and will be reviewed.",
   );
 });
 

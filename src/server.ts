@@ -6,6 +6,7 @@ import { connectDatabase, disconnectDatabase } from "./config/database";
 import { startJobs } from "./jobs";
 import { seedPlatformConfig, seedAds } from "./services/config.service";
 import { seedOnboardingSlides } from "./services/onboarding.service";
+import { seedSuperAdmin } from "./services/admin/adminAuth.service";
 
 const startServer = async () => {
   try {
@@ -16,6 +17,7 @@ const startServer = async () => {
     await seedPlatformConfig();
     await seedOnboardingSlides();
     await seedAds();
+    await seedSuperAdmin();
     logger.info("✅ Platform config and onboarding slides seeded");
 
     if (config.isProd) startJobs();

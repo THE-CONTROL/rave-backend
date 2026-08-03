@@ -166,6 +166,7 @@ export const updateDeliveryStatus = asyncHandler(
         uid(req),
         req.params.id,
         req.body.status,
+        req.body.reason,
       ),
     );
   },
@@ -235,7 +236,15 @@ export const submitIssueReport = asyncHandler(
 
 export const getAnalytics = asyncHandler(
   async (req: Request, res: Response) => {
-    ok(res, await riderService.getAnalytics(uid(req)));
+    const { filter, startDate, endDate } = req.query as {
+      filter?: string;
+      startDate?: string;
+      endDate?: string;
+    };
+    ok(
+      res,
+      await riderService.getAnalytics(uid(req), { filter, startDate, endDate }),
+    );
   },
 );
 
@@ -305,6 +314,31 @@ export const deleteBankAccount = asyncHandler(
     ok(res, null, "Bank account removed.");
   },
 );
+
+export const updateBankAccount = asyncHandler(
+  async (req: Request, res: Response) => {
+    await riderService.updateBankAccount(uid(req), req.params.id, req.body);
+    ok(res, null, "Bank account updated.");
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Balance & Withdraw
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getBalance = asyncHandler(async (req: Request, res: Response) => {
+  ok(res, await riderService.getRiderBalance(uid(req)));
+});
+
+export const withdraw = asyncHandler(async (req: Request, res: Response) => {
+  const { amount, bankAccountId } = req.body;
+  const result = await riderService.withdrawRiderFunds(
+    uid(req),
+    amount,
+    bankAccountId,
+  );
+  ok(res, result, "Withdrawal processed.");
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Notifications

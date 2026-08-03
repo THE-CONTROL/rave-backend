@@ -126,12 +126,26 @@ function buildClosePage(): string {
 
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
   const secret = process.env.PAYSTACK_SECRET_KEY ?? "";
+  // Hash the exact raw bytes Paystack sent (captured by the express.json
+  // `verify` callback in app.ts) — re-serializing the parsed body isn't
+  // guaranteed byte-identical and can make valid signatures fail to match.
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
   const hash = crypto
     .createHmac("sha512", secret)
-    .update(JSON.stringify(req.body))
+    .update(rawBody ?? JSON.stringify(req.body))
     .digest("hex");
 
-  if (hash !== req.headers["x-paystack-signature"]) {
+  const signatureHeader = req.headers["x-paystack-signature"];
+  const provided = Buffer.from(
+    typeof signatureHeader === "string" ? signatureHeader : "",
+    "utf8",
+  );
+  const expected = Buffer.from(hash, "utf8");
+  const isValidSignature =
+    provided.length === expected.length &&
+    crypto.timingSafeEqual(provided, expected);
+
+  if (!isValidSignature) {
     // Return 200 so Paystack stops retrying invalid signature attempts
     res.sendStatus(200);
     return;

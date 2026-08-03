@@ -9,6 +9,8 @@ import policyRoutes from "./policy.routes";
 import adRoutes from "./ad.routes";
 import paymentRoutes from "./payment.routes";
 import optionGroupRoutes from "./optionGroup.routes";
+import reviewRoutes from "./review.routes";
+import adminRoutes from "./admin";
 
 const router = Router();
 
@@ -30,5 +32,7 @@ router.use("/policy", policyRoutes);
 router.use("/ads", adRoutes);
 router.use("/payments", paymentRoutes);
 router.use("/vendor/option-groups", optionGroupRoutes);
+router.use("/reviews", reviewRoutes);
+router.use("/admin", adminRoutes);
 
 export default router;

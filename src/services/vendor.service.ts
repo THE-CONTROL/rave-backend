@@ -13,6 +13,10 @@ import {
 import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
 import { format } from "date-fns"; //
+import * as notif from "../events/notification.events";
+import { cfg } from "./config.service";
+import { ps } from "./payment.service";
+import * as refundProcessing from "./shared/refundProcessing.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile
@@ -81,13 +85,26 @@ export const changeVendorPassword = async (
     where: { id: userId },
     data: { passwordHash: hash },
   });
+
+  // A stolen refresh token shouldn't survive a legitimate password change.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 export const deleteVendorAccount = async (userId: string): Promise<void> => {
   await prisma.user.update({
     where: { id: userId },
-    data: { isActive: false, email: `deleted_vendor_${userId}@rave.com` },
+    data: {
+      isActive: false,
+      email: `deleted_vendor_${userId}@rave.com`,
+      // Mirrors the user-account soft-delete: free the unique phone column
+      // for reuse instead of locking it out forever.
+      phone: `deleted_vendor_${userId}`,
+    },
   });
+
+  // Deactivating the account should kill any existing session immediately,
+  // not just block future logins.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,13 +284,18 @@ export const toggleStoreOpen = async (
   userId: string,
 ): Promise<{ isOpen: boolean }> => {
   const vendor = await _requireVendor(userId);
+  const nextIsOpen = !vendor.isOpen;
 
-  // if (vendor.storeStatus !== "open") {
-  //   throw AppError.badRequest("Only activated stores can be opened.");
-  // }
+  // Only block turning the store ON while it isn't activated — always allow
+  // turning it OFF, even for a store that was since paused/denied, so a
+  // vendor can never get stuck unable to close.
+  if (nextIsOpen && vendor.storeStatus !== "open") {
+    throw AppError.badRequest("Only activated stores can be opened.");
+  }
+
   const updated = await prisma.vendorProfile.update({
     where: { id: vendor.id },
-    data: { isOpen: !vendor.isOpen },
+    data: { isOpen: nextIsOpen },
     select: { isOpen: true },
   });
   return updated;
@@ -1031,12 +1053,11 @@ export const getVendorTransactions = async (
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
-  // Only types that are actually written against a vendorId exist in the
-  // ledger: "order" (the customer's payment = the vendor's earning) and
-  // "refund". There is no vendor "payment"/"withdrawal" row anywhere in the
-  // codebase, so they're excluded — advertising them would only ever return
-  // empty results.
-  const validTypes = ["order", "refund"];
+  // Types actually written against a vendorId: "order" (the customer's
+  // payment = the vendor's earning), "refund", and "payment" (a vendor
+  // payout/withdrawal — see withdrawVendorFunds, which mirrors the rider
+  // payout convention of using type "payment" for a real bank payout row).
+  const validTypes = ["order", "refund", "payment"];
 
   const typeFilter =
     query.type &&
@@ -1142,9 +1163,27 @@ export const getVendorTransactionById = async (
   const isRefund = tx.type === "refund";
 
   // Fee/net breakdown — only meaningful for earnings, not refunds.
-  // amount is stored net (after the 10% platform fee), so gross = net / 0.9.
+  //
+  // Since payment.service.ts's initializeCheckout now stores the real
+  // subtotal/fee at transaction-creation time (computed from the vendor's
+  // actual item subtotal × cfg.fees.vendorCommission()), tx.subtotal/tx.fee
+  // are populated for every NEW order transaction and this fallback is
+  // unreachable for them.
+  //
+  // LEGACY FALLBACK ONLY: transactions created before that fix never had
+  // subtotal/fee written, so tx.subtotal/tx.fee are null on those old rows.
+  // For those (and only those) we reconstruct an approximate breakdown by
+  // assuming the old (incorrect) convention that `amount` was net-of-10%-fee,
+  // i.e. gross = net / 0.9. This is a best-effort display for historical data
+  // and intentionally left in place — do not remove until old rows have been
+  // migrated/backfilled.
   const subtotal = tx.subtotal ?? tx.amount / 0.9;
   const fee = tx.fee ?? subtotal - tx.amount;
+  // Effective commission rate for THIS transaction (works for both new rows,
+  // where it reflects the real configured rate, and legacy rows, where the
+  // fallback above always yields ~10%) — lets the UI show the true rate
+  // instead of a hardcoded "10%" label.
+  const feeRate = subtotal > 0 ? fee / subtotal : 0;
 
   // Prefer the snapshotted customerName; fall back to the live order's user.
   const customerName =
@@ -1166,6 +1205,12 @@ export const getVendorTransactionById = async (
 
     subtotal,
     fee,
+    feeRate,
+    // The vendor's real take-home for this order — subtotal minus the
+    // platform commission. NOT tx.amount, which is the customer's full
+    // checkout total (delivery fee + VAT + service fee included) and was
+    // never the vendor's money.
+    netEarnings: subtotal - fee,
     formattedDate: orderDate.toLocaleDateString("en-US", {
       month: "short",
       day: "2-digit",
@@ -1384,9 +1429,21 @@ export const submitVendorOnboarding = async (
 
   // Make sure _requireVendor is imported/defined in your file scope
   const vendor = await _requireVendor(userId);
+
+  // Submitting setup — whether for the first time or as a resubmission after
+  // already being approved/denied/suspended — always sends the store back
+  // into the admin review queue. A vendor that edited their name/address/
+  // logo/documents and re-submitted shouldn't stay silently `open` (or stuck
+  // `denied`) with unreviewed changes; `under_review` is a no-op if this is
+  // the first-ever submission, since that's already the default status.
   await prisma.vendorProfile.update({
     where: { id: vendor.id },
-    data: { setupProgress: 100 } as any,
+    data: {
+      setupProgress: 100,
+      storeStatus: "under_review",
+      storeStatusReason: null,
+      isOpen: false,
+    } as any,
   });
 
   return { success: true };
@@ -1408,6 +1465,8 @@ export const getVendorBankAccounts = async (userId: string) => {
   }));
 };
 
+const MAX_BANK_ACCOUNTS_PER_ROLE = 3;
+
 export const saveVendorBankAccount = async (
   userId: string,
   data: {
@@ -1422,6 +1481,23 @@ export const saveVendorBankAccount = async (
   const count = await prisma.bankAccount.count({
     where: { vendorId: vendor.id },
   });
+
+  if (count >= MAX_BANK_ACCOUNTS_PER_ROLE) {
+    throw AppError.badRequest(
+      `You can only save up to ${MAX_BANK_ACCOUNTS_PER_ROLE} bank accounts.`,
+    );
+  }
+
+  const duplicate = await prisma.bankAccount.findFirst({
+    where: {
+      vendorId: vendor.id,
+      accountNumber: data.accountNumber,
+      bankCode: data.bankCode,
+    },
+  });
+  if (duplicate) {
+    throw AppError.badRequest("This bank account is already saved.");
+  }
 
   await prisma.bankAccount.create({
     data: {
@@ -1578,6 +1654,16 @@ export const updatePromotion = async (
     updatedData.productIds = [];
   }
 
+  // Defense-in-depth: re-validate end-after-start using the *effective*
+  // dates (new value if provided, otherwise whatever is already stored),
+  // so a partial update that only touches one of the two dates can never
+  // leave the promotion with an end date at or before its start date.
+  const effectiveStart = new Date(updatedData.startDate ?? existing.startDate);
+  const effectiveEnd = new Date(updatedData.endDate ?? existing.endDate);
+  if (effectiveEnd <= effectiveStart) {
+    throw AppError.badRequest("End date must be after start date");
+  }
+
   return prisma.promotion.update({
     where: { id: promoId },
     data: updatedData,
@@ -1631,18 +1717,37 @@ export const getVendorRatingStats = async (userId: string) => {
 
 export const getVendorReviews = async (
   userId: string,
-  query: PaginationQuery & { rating?: string; hasComment?: string },
+  query: PaginationQuery & {
+    rating?: string;
+    hasComment?: string;
+    sort?: string;
+  },
 ) => {
   const vendor = await _requireVendor(userId);
   const { page, limit, skip } = parsePagination(query);
 
+  // Star filter (exact match, 1–5) and sort, applied server-side so they
+  // page correctly — mirrors getRiderReviews.
+  const ratingNum = query.rating ? Number(query.rating) : undefined;
+  const ratingFilter =
+    ratingNum && ratingNum >= 1 && ratingNum <= 5
+      ? { restaurantRating: ratingNum }
+      : {};
+
   const where = {
     vendorId: vendor.id,
-    ...(query.rating
-      ? { restaurantRating: { gte: Number(query.rating) } }
-      : {}),
+    ...ratingFilter,
     ...(query.hasComment === "true" ? { comment: { not: null } } : {}),
   };
+
+  const orderBy =
+    query.sort === "oldest"
+      ? { createdAt: "asc" as const }
+      : query.sort === "highest"
+        ? { restaurantRating: "desc" as const }
+        : query.sort === "lowest"
+          ? { restaurantRating: "asc" as const }
+          : { createdAt: "desc" as const };
 
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({
@@ -1656,7 +1761,7 @@ export const getVendorReviews = async (
           },
         },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip,
       take: limit,
     }),
@@ -1676,17 +1781,48 @@ export const getVendorReviews = async (
 // Badges
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Simple XP-threshold rank ladder, lowest to highest. A vendor's rank is the
+// highest entry whose `minXp` their total unlocked-badge XP meets or exceeds.
+const BADGE_RANKS = [
+  { name: "Newcomer", minXp: 0 },
+  { name: "Rising Star", minXp: 300 },
+  { name: "Pro", minXp: 700 },
+  { name: "Elite", minXp: 1500 },
+] as const;
+
 export const getBadgeStats = async (userId: string) => {
   const vendor = await _requireVendor(userId);
-  const [unlocked, inProgress] = await Promise.all([
-    prisma.vendorBadge.count({
+  const [unlockedBadges, inProgress] = await Promise.all([
+    prisma.vendorBadge.findMany({
       where: { vendorId: vendor.id, state: "unlocked" },
+      include: { badge: { select: { xpReward: true } } },
     }),
     prisma.vendorBadge.count({
       where: { vendorId: vendor.id, state: "in_progress" },
     }),
   ]);
-  return { badgesUnlocked: unlocked, inProgress, rank: "Rising Star" };
+
+  const badgesUnlocked = unlockedBadges.length;
+  const xp = unlockedBadges.reduce(
+    (sum, vb) => sum + (vb.badge?.xpReward ?? 0),
+    0,
+  );
+
+  // Highest rank whose threshold has been met.
+  const rankIndex = BADGE_RANKS.reduce(
+    (acc, tier, i) => (xp >= tier.minXp ? i : acc),
+    0,
+  );
+  const rank = BADGE_RANKS[rankIndex].name;
+  // Floor XP of the current bracket — lets the client compute progress
+  // *within* the current rank's range rather than from zero.
+  const rankMinXp = BADGE_RANKS[rankIndex].minXp;
+  const nextTier = BADGE_RANKS[rankIndex + 1] ?? null;
+  const nextRank = nextTier
+    ? { name: nextTier.name, xpNeeded: nextTier.minXp }
+    : null;
+
+  return { badgesUnlocked, inProgress, xp, rank, rankMinXp, nextRank };
 };
 
 export const getBadges = async (userId: string) => {
@@ -1867,8 +2003,8 @@ export const updateVendorBankAccount = async (
   userId: string,
   bankId: string,
   data: {
-    bank?: string;
-    name?: string;
+    bankName?: string;
+    accountName?: string;
     accountNumber?: string;
     bankCode?: string;
   },
@@ -1878,7 +2014,230 @@ export const updateVendorBankAccount = async (
     where: { id: bankId, vendorId: vendor.id },
   });
   if (!account) throw AppError.notFound("Bank account");
+  // Unlike saveVendorBankAccount's create path (which still receives the
+  // legacy bank/name aliases from the "add account" form and remaps them),
+  // the edit screen already sends the real bankName/accountName Prisma
+  // column names directly — see vendorUpdateBankSchema — so this can pass
+  // the fields straight through instead of forwarding {bank, name} into a
+  // Prisma model that has no such columns (which is what crashed before).
   await prisma.bankAccount.update({ where: { id: bankId }, data });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Balance & Withdraw (real Paystack payouts — no internal wallet ledger)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Net vendor earnings, paid-out totals, and the resulting available balance.
+ *
+ * Available balance = (sum of every completed order's real vendor earning)
+ *                    − (sum of completed payout amounts)
+ *                    − (sum of payouts currently in flight/"initiated")
+ *
+ * "Real vendor earning" per order = subtotal − fee, using the genuine
+ * commission breakdown persisted at checkout time (see
+ * payment.service.ts#initializeCheckout). For historical rows that predate
+ * that fix (subtotal/fee null), we fall back to tx.amount — i.e. we treat the
+ * old (mislabeled) `amount` as if it were already net, exactly like the
+ * legacy fallback in getVendorTransactionById above, so the balance always
+ * agrees with what a vendor sees on any individual old transaction's detail
+ * screen. Payouts (withdrawals) are ledgered as type "payment" against the
+ * vendor, mirroring the rider payout convention in rider.service.ts.
+ */
+export const getVendorBalance = async (userId: string) => {
+  const vendor = await _requireVendor(userId);
+
+  const [newEarningsAgg, legacyEarningsAgg, paidOutAgg, pendingAgg, commission] =
+    await Promise.all([
+      // New-style rows: real subtotal/fee were persisted at creation.
+      prisma.transaction.aggregate({
+        where: {
+          vendorId: vendor.id,
+          type: "order",
+          status: "completed",
+          subtotal: { not: null },
+        },
+        _sum: { subtotal: true, fee: true },
+      }),
+      // Legacy rows: subtotal/fee were never populated — fall back to amount
+      // (see comment above / getVendorTransactionById's identical fallback).
+      prisma.transaction.aggregate({
+        where: {
+          vendorId: vendor.id,
+          type: "order",
+          status: "completed",
+          subtotal: null,
+        },
+        _sum: { amount: true },
+      }),
+      // Completed payouts already sent to the vendor's bank via Paystack.
+      prisma.transaction.aggregate({
+        where: { vendorId: vendor.id, type: "payment", status: "completed" },
+        _sum: { amount: true },
+      }),
+      // Payouts currently in flight — earmarked so a second withdraw request
+      // can't double-spend the same balance while the first is processing.
+      prisma.transaction.aggregate({
+        where: { vendorId: vendor.id, type: "payment", status: "initiated" },
+        _sum: { amount: true },
+      }),
+      cfg.fees.vendorCommission(),
+    ]);
+
+  const newSubtotal = newEarningsAgg._sum.subtotal ?? 0;
+  const newFee = newEarningsAgg._sum.fee ?? 0;
+  const legacyEarnings = legacyEarningsAgg._sum.amount ?? 0;
+
+  const totalEarned = newSubtotal - newFee + legacyEarnings;
+  const totalWithdrawn = paidOutAgg._sum.amount ?? 0;
+  const pendingBalance = pendingAgg._sum.amount ?? 0;
+
+  const availableBalance = Math.max(
+    0,
+    totalEarned - totalWithdrawn - pendingBalance,
+  );
+
+  // A handful of recent transactions for the earnings screen's context —
+  // mirrors the shape getVendorTransactions already formats.
+  const recent = await prisma.transaction.findMany({
+    where: { vendorId: vendor.id },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+  });
+
+  const recentTransactions = recent.map((tx) => ({
+    ...tx,
+    formattedAmount: `₦${tx.amount.toLocaleString()}`,
+    formattedDate: tx.createdAt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    }),
+    formattedTime: tx.createdAt.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }),
+    iconBg:
+      tx.type === "payment" || tx.type === "order" ? "#FEF3F2" : "#ECFDF5",
+  }));
+
+  return {
+    totalEarned,
+    totalWithdrawn,
+    pendingBalance,
+    availableBalance,
+    commissionRate: commission,
+    recentTransactions,
+  };
+};
+
+const WITHDRAW_RETRY_DELAYS_MS = [1_000, 3_000, 7_000];
+
+/**
+ * Withdraw a vendor's available balance to one of their bank accounts via a
+ * real Paystack transfer — the vendor-side equivalent of rider.service.ts's
+ * _disburseRiderEarnings. Unlike the rider payout (fired automatically,
+ * fire-and-forget, right after a delivery completes), this is a synchronous,
+ * on-demand request the vendor explicitly triggers, so we await the whole
+ * recipient-creation + transfer + retry chain and return its outcome instead
+ * of leaving the caller to poll.
+ */
+export const withdrawVendorFunds = async (
+  userId: string,
+  amount: number,
+  bankAccountId: string,
+) => {
+  const vendor = await _requireVendor(userId);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw AppError.badRequest("Enter a valid withdrawal amount.");
+  }
+
+  const bankAccount = await prisma.bankAccount.findFirst({
+    where: { id: bankAccountId, vendorId: vendor.id },
+  });
+  if (!bankAccount) throw AppError.notFound("Bank account");
+
+  const { availableBalance } = await getVendorBalance(userId);
+  if (amount > availableBalance) {
+    throw AppError.badRequest("Amount exceeds your available balance.");
+  }
+
+  // Ledger row created up front, "initiated" — this is what getVendorBalance
+  // earmarks against so a second concurrent withdraw can't also spend this
+  // same balance while the transfer below is still in flight.
+  const tx = await prisma.transaction.create({
+    data: {
+      vendorId: vendor.id,
+      type: "payment",
+      status: "initiated",
+      title: "Vendor Payout",
+      amount,
+      paymentMethod: "bank_transfer",
+    },
+  });
+
+  // Same retry/backoff structure as _disburseRiderEarnings: three attempts at
+  // 1s / 3s / 7s. If all three fail, the row is marked "failed" (rather than
+  // silently left "initiated") so it's unambiguous the payout needs manual
+  // investigation/retry, and the vendor's balance is no longer earmarked
+  // against it (a "failed" row is excluded from the pending-balance sum).
+  let lastError: string = "Paystack transfer error";
+  for (let attempt = 0; attempt <= WITHDRAW_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const recipientRes = await ps.post("/transferrecipient", {
+        type: "nuban",
+        name: bankAccount.accountName,
+        account_number: bankAccount.accountNumber,
+        bank_code: bankAccount.bankCode,
+        currency: "NGN",
+      });
+
+      const recipientCode = recipientRes.data.data.recipient_code;
+
+      const transferRes = await ps.post("/transfer", {
+        source: "balance",
+        amount: Math.round(amount * 100), // Kobo
+        recipient: recipientCode,
+        reason: `Rave vendor payout - ${vendor.storeName ?? vendor.id}`,
+      });
+
+      const transferCode = transferRes.data.data.transfer_code;
+
+      const completed = await prisma.transaction.update({
+        where: { id: tx.id },
+        data: { status: "completed", reference: transferCode },
+      });
+
+      return {
+        status: "completed" as const,
+        transactionId: completed.id,
+        reference: transferCode,
+      };
+    } catch (err: any) {
+      lastError =
+        err?.response?.data?.message ??
+        err?.message ??
+        "Paystack transfer error";
+
+      if (attempt === WITHDRAW_RETRY_DELAYS_MS.length) {
+        await prisma.transaction.update({
+          where: { id: tx.id },
+          data: { status: "failed", reason: lastError },
+        });
+        throw AppError.badRequest(
+          `Withdrawal could not be completed: ${lastError}. Please try again shortly.`,
+        );
+      }
+
+      const waitMs = WITHDRAW_RETRY_DELAYS_MS[attempt];
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
+  // Unreachable — the loop above always returns or throws.
+  throw AppError.badRequest(`Withdrawal failed: ${lastError}`);
 };
 
 export const getRiderLocationForOrder = async (
@@ -1902,4 +2261,89 @@ export const getRiderLocationForOrder = async (
     lat: order.delivery.rider.currentLat,
     lng: order.delivery.rider.currentLng,
   };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Refunds — vendor-facing approve/decline (first line of resolution; admins
+// can also force-approve/decline any refund via admin/refundAdmin.service.ts,
+// which shares the same Paystack-refund core in shared/refundProcessing.service.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getVendorRefunds = async (
+  userId: string,
+  query: PaginationQuery & { status?: string },
+) => {
+  const vendor = await _requireVendor(userId);
+  const { page, limit, skip } = parsePagination(query);
+
+  const where = {
+    order: { vendorId: vendor.id },
+    ...(query.status && query.status !== "all"
+      ? { status: query.status as any }
+      : {}),
+  };
+
+  const [refunds, total] = await Promise.all([
+    prisma.refundRequest.findMany({
+      where,
+      include: {
+        items: true,
+        order: { select: { orderId: true } },
+        user: { select: { fullName: true, imageUrl: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.refundRequest.count({ where }),
+  ]);
+
+  return {
+    refunds: refunds.map((r) => ({
+      id: r.id,
+      orderId: r.order.orderId,
+      customerName: r.user.fullName,
+      customerImage: r.user.imageUrl,
+      issue: r.issue,
+      description: r.description,
+      status: r.status,
+      amountRequested: r.amountRequested,
+      amountApproved: r.amountApproved,
+      updateMessage: r.updateMessage,
+      items: r.items.map((i) => ({ name: i.name, qty: i.qty })),
+      createdAt: r.createdAt,
+    })),
+    meta: buildMeta(total, page, limit),
+  };
+};
+
+// Scoped the same way every other vendor read/write in this file is: resolve
+// the vendor's own profile, then require the target row join back to a
+// vendorId match — here via RefundRequest → Order → vendorId, so a vendor can
+// never act on another store's refund requests.
+const _requireVendorOwnedRefund = async (userId: string, refundId: string) => {
+  const vendor = await _requireVendor(userId);
+  const refund = await prisma.refundRequest.findFirst({
+    where: { id: refundId, order: { vendorId: vendor.id } },
+    include: { order: true },
+  });
+  if (!refund) throw AppError.notFound("Refund request");
+  return refund;
+};
+
+export const approveRefundRequest = async (
+  userId: string,
+  refundId: string,
+): Promise<void> => {
+  const refund = await _requireVendorOwnedRefund(userId, refundId);
+  await refundProcessing.processRefundApproval(refund);
+};
+
+export const declineRefundRequest = async (
+  userId: string,
+  refundId: string,
+  reason?: string,
+): Promise<void> => {
+  const refund = await _requireVendorOwnedRefund(userId, refundId);
+  await refundProcessing.processRefundDecline(refund, reason);
 };

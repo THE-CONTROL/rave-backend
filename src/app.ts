@@ -1,5 +1,5 @@
 // src/app.ts
-import express from "express";
+import express, { Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -14,6 +14,11 @@ import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
 const app = express();
+
+// Trust the first proxy hop (load balancer/reverse proxy) so req.ip reports
+// the real client address rather than the proxy's — relied on by the global
+// rate limiter and, now, admin audit-log IP capture.
+app.set("trust proxy", 1);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Security
@@ -64,7 +69,18 @@ const authLimiter = rateLimit({
 // Body parsing & compression
 // ─────────────────────────────────────────────────────────────────────────────
 
-app.use(express.json({ limit: "10mb" }));
+// Capture the raw request body alongside the parsed one — Paystack's webhook
+// signature is computed over the exact bytes it sent, and re-serializing the
+// already-parsed JSON (via JSON.stringify) isn't guaranteed byte-identical,
+// which can cause legitimate webhooks to silently fail signature checks.
+app.use(
+  express.json({
+    limit: "10mb",
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(compression());
 

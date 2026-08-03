@@ -219,6 +219,22 @@ export const deleteBankAccount = asyncHandler(async (req, res) => {
   noContent(res);
 });
 
+// ── Balance & Withdraw ────────────────────────────────────────────────────────
+
+export const getBalance = asyncHandler(async (req, res) => {
+  ok(res, await vendorService.getVendorBalance(uid(req)));
+});
+
+export const withdraw = asyncHandler(async (req, res) => {
+  const { amount, bankAccountId } = req.body;
+  const result = await vendorService.withdrawVendorFunds(
+    uid(req),
+    amount,
+    bankAccountId,
+  );
+  ok(res, result, "Withdrawal request submitted.");
+});
+
 // ── Promotions ────────────────────────────────────────────────────────────────
 
 export const getPromotions = asyncHandler(async (req, res) => {
@@ -396,4 +412,28 @@ export const getRiderLocation = asyncHandler(async (req, res) => {
     res,
     await vendorService.getRiderLocationForOrder(uid(req), req.params.id),
   );
+});
+
+// ── Refunds ───────────────────────────────────────────────────────────────────
+
+export const getRefunds = asyncHandler(async (req, res) => {
+  const result = await vendorService.getVendorRefunds(
+    uid(req),
+    req.query as any,
+  );
+  ok(res, { refunds: result.refunds }, "Refunds retrieved.", result.meta);
+});
+
+export const approveRefund = asyncHandler(async (req, res) => {
+  await vendorService.approveRefundRequest(uid(req), req.params.id);
+  ok(res, null, "Refund approved and processed.");
+});
+
+export const declineRefund = asyncHandler(async (req, res) => {
+  await vendorService.declineRefundRequest(
+    uid(req),
+    req.params.id,
+    req.body.reason,
+  );
+  ok(res, null, "Refund request declined.");
 });

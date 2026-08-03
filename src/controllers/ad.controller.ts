@@ -3,12 +3,12 @@ import { Request, Response } from "express";
 import * as adService from "../services/ad.service";
 import { AuthenticatedRequest } from "../types";
 import { ok, asyncHandler } from "../utils";
-import { Role } from "@prisma/client";
 
 export const getStartupAd = asyncHandler(
   async (req: Request, res: Response) => {
-    const role = ((req as AuthenticatedRequest).user?.role ??
-      req.query.role) as Role;
+    // The route requires `authenticate`, so `req.user` is always set here —
+    // there is no unauthenticated path that would need a query-param fallback.
+    const role = (req as AuthenticatedRequest).user.role;
     ok(res, await adService.getStartupAd(role));
   },
 );

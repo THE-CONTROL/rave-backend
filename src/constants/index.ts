@@ -1,42 +1,12 @@
 // src/constants/index.ts
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fees & financial
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const FEES = {
-  DELIVERY_BASE: 800, // ₦800 base delivery fee
-  SERVICE_FEE: 150, // ₦150 per order service fee
-  VAT_RATE: 0.075, // 7.5% VAT
-  VENDOR_COMMISSION: 0.1, // 10% platform commission on vendor earnings
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Referral
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const REFERRAL = {
-  REFEREE_BONUS: 1000, // ₦1,000 off first order for referee
-  REFERRER_BONUS: 1000, // ₦1,000 for referrer when referee completes ₦3,000+ order
-  MIN_ORDER_FOR_BONUS: 3000,
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OTP
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const OTP = {
-  LENGTH: 6,
-  EXPIRY_MINUTES: 10,
-  MAX_ATTEMPTS: 5,
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Order cancellation window
+// Fees, referral bonuses, OTP settings, and the order-cancel window all live
+// in PlatformConfig (see src/services/config.service.ts's `cfg` object) so
+// admins can edit them without a deployment — no code constants for those here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const ORDER = {
-  CANCEL_WINDOW_SECONDS: 300, // 5 minutes after placement
   CANCELLABLE_STATUSES: ["new", "accepted"] as const,
   REVIEWABLE_STATUSES: ["completed"] as const,
 } as const;

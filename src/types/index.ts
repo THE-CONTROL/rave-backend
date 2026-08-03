@@ -78,28 +78,31 @@ export interface SignUpDto {
 export interface SignInDto {
   email: string;
   password: string;
+  audience: "rave" | "ridewithrave" | "rave-admin";
 }
 
 export interface VerifyEmailDto {
   code: string;
   purpose: "verify-account" | "reset-password";
   role?: Role;
-  email?: string;
+  email: string;
 }
 
 export interface ForgotPasswordDto {
   email: string;
-  purpose: string;
+  purpose: "verify-account" | "reset-password";
 }
 
 export interface ResetPasswordDto {
   password: string;
   confirmPassword: string;
+  email?: string;
+  code: string;
 }
 
 export interface SignInResult {
   status: string;
-  role: "user" | "vendor" | "rider"; // Added role
+  role: "user" | "vendor" | "rider" | "admin"; // Added role
   tokens: TokenPair;
 }
 

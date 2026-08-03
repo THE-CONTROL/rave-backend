@@ -72,10 +72,23 @@ export const updateRiderProfile = async (
     ...(imageUrl && { imageUrl }),
   };
 
-  const riderFields = {
+  const riderFields: Record<string, any> = {
     ...(riderData.vehicleType && { vehicleType: riderData.vehicleType }),
     ...(riderData.vehiclePlate && { vehiclePlate: riderData.vehiclePlate }),
   };
+
+  // Vehicle type/plate are verification-relevant (the plate photo on file is
+  // only valid for the declared vehicle) — changing either after the rider
+  // is already verified/suspended sends them back into the admin review
+  // queue, same as resubmitting documents does. Plain profile fields
+  // (name/phone/photo) never touch status.
+  if (Object.keys(riderFields).length > 0) {
+    const rider = await _requireRider(userId);
+    if (rider.status === "verified" || rider.status === "suspended") {
+      riderFields.status = "pending";
+      riderFields.isOnline = false;
+    }
+  }
 
   const ops: any[] = [];
 
@@ -118,13 +131,26 @@ export const changeRiderPassword = async (
     where: { id: userId },
     data: { passwordHash: hash },
   });
+
+  // A stolen refresh token shouldn't survive a legitimate password change.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 export const deleteRiderAccount = async (userId: string): Promise<void> => {
   await prisma.user.update({
     where: { id: userId },
-    data: { isActive: false, email: `deleted_rider_${userId}@rave.com` },
+    data: {
+      isActive: false,
+      email: `deleted_rider_${userId}@rave.com`,
+      // Mirrors the user-account soft-delete: free the unique phone column
+      // for reuse instead of locking it out forever.
+      phone: `deleted_rider_${userId}`,
+    },
   });
+
+  // Deactivating the account should kill any existing session immediately,
+  // not just block future logins.
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 };
 
 export const toggleOnlineStatus = async (
@@ -132,10 +158,45 @@ export const toggleOnlineStatus = async (
   isOnline: boolean,
 ): Promise<{ isOnline: boolean }> => {
   const rider = await _requireRider(userId);
+
+  // Only block going ONLINE while not verified — always allow going offline,
+  // even for a rider who was since suspended, so no one gets stuck unable to
+  // turn themselves off.
+  if (isOnline && rider.status !== "verified") {
+    throw AppError.forbidden(
+      "Your account is not yet verified for deliveries.",
+    );
+  }
+
   await prisma.riderProfile.update({
     where: { id: rider.id },
     data: { isOnline },
   });
+
+  const now = new Date();
+
+  if (isOnline) {
+    // Close out any stale open session first — e.g. the app was killed
+    // without a clean "going offline" call, leaving a session with no
+    // endedAt. Without this, going online again would create a second
+    // overlapping open session and double-count online time.
+    await prisma.riderSession.updateMany({
+      where: { riderId: rider.id, endedAt: null },
+      data: { endedAt: now },
+    });
+    await prisma.riderSession.create({
+      data: { riderId: rider.id, startedAt: now },
+    });
+  } else {
+    // Close the most recent open session, if any. (There should be at most
+    // one, since going online always closes stale ones first — but
+    // updateMany guards against ever leaving more than one dangling open.)
+    await prisma.riderSession.updateMany({
+      where: { riderId: rider.id, endedAt: null },
+      data: { endedAt: now },
+    });
+  }
+
   return { isOnline };
 };
 
@@ -147,7 +208,7 @@ export const getRiderOnboardingState = async (userId: string) => {
 
   // Determine which steps are done based on data presence
   const step0Done = !!(
-    rider.currentAddress &&
+    rider.homeAddress &&
     rider.stateOfResidence &&
     rider.cityOfResidence
   ); // Address
@@ -179,6 +240,7 @@ export const getRiderOnboardingState = async (userId: string) => {
     setupProgress: rider.setupProgress,
     stateOfResidence: rider.stateOfResidence || null,
     cityOfResidence: rider.cityOfResidence || null,
+    homeAddress: rider.homeAddress || null,
     currentAddress: rider.currentAddress,
     currentLat: rider.currentLat,
     currentLng: rider.currentLng,
@@ -197,6 +259,12 @@ export const getRiderOnboardingState = async (userId: string) => {
           bank: bank.bankName,
           accountNumber: bank.accountNumber,
           name: bank.accountName,
+          // Without this, re-opening the Bank step during onboarding review
+          // always started from a blank bankCode (the account name still
+          // displayed correctly from `name`, masking the problem) and
+          // resubmitting silently wiped the previously-valid bankCode used
+          // for real Paystack payouts.
+          bankCode: bank.bankCode,
         }
       : null,
   };
@@ -211,6 +279,9 @@ export const saveRiderOnboardingStep = async (
 
   // --- Step 0: Residence Details ---
   if (step === 0) {
+    // homeAddress gets its own column (distinct from riderProfile.currentAddress,
+    // which step 1 below writes the GPS-derived live-location address to) so
+    // step 1 can no longer clobber what the rider entered here.
     await prisma.$transaction([
       prisma.user.update({
         where: { id: userId },
@@ -221,7 +292,7 @@ export const saveRiderOnboardingStep = async (
         data: {
           stateOfResidence: data.stateOfResidence,
           cityOfResidence: data.cityOfResidence,
-          currentAddress: data.currentAddress,
+          homeAddress: data.homeAddress,
         },
       }),
     ]);
@@ -292,7 +363,7 @@ export const saveRiderOnboardingStep = async (
   // --- Recalculate Progress ---
   const state = await getRiderOnboardingState(userId);
   const progressSteps = [
-    !!state.currentAddress, // Step 0
+    !!state.homeAddress, // Step 0
     !!state.currentLat, // Step 1
     !!state.vehiclePlate, // Step 2
     !!state.idDocUrl, // Step 3
@@ -379,7 +450,7 @@ export const getDashboardStats = async (userId: string) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [todayDeliveries, todayEarningsTx] = await Promise.all([
+  const [todayDeliveries, todayEarningsTx, todaySessions] = await Promise.all([
     prisma.delivery.count({
       where: {
         riderId: rider.id,
@@ -399,12 +470,24 @@ export const getDashboardStats = async (userId: string) => {
       },
       _sum: { amount: true },
     }),
+    prisma.riderSession.findMany({
+      where: { riderId: rider.id, startedAt: { gte: today } },
+      select: { startedAt: true, endedAt: true },
+    }),
   ]);
+
+  const now = new Date();
+  const onlineMs = todaySessions.reduce(
+    (sum, s) => sum + ((s.endedAt ?? now).getTime() - s.startedAt.getTime()),
+    0,
+  );
+  const onlineHours = Math.floor(onlineMs / 3_600_000);
+  const onlineMinutes = Math.floor((onlineMs % 3_600_000) / 60_000);
 
   return {
     todayEarnings: todayEarningsTx._sum.amount ?? 0,
     completedDeliveries: todayDeliveries,
-    onlineTime: "0h 0m", // implement with session tracking if needed
+    onlineTime: `${onlineHours}h ${onlineMinutes}m`,
     isOnline: rider.isOnline,
   };
 };
@@ -415,6 +498,12 @@ export const getAvailableOrders = async (
 ) => {
   const rider = await _requireRider(userId);
   const { page, limit, skip } = parsePagination(query);
+
+  if (rider.status !== "verified") {
+    throw AppError.forbidden(
+      "Your account is not yet verified for deliveries.",
+    );
+  }
 
   if (!rider.currentLat || !rider.currentLng) {
     throw AppError.badRequest(
@@ -428,27 +517,60 @@ export const getAvailableOrders = async (
     delivery: null,
   };
 
-  const [orders, total] = await Promise.all([
-    prisma.order.findMany({
-      where,
-      include: {
-        vendor: {
-          select: {
-            storeName: true,
-            logoUrl: true,
-            address: true,
-            lat: true,
-            lng: true,
-          },
+  // Distance filtering happens in application code (plain lat/lng columns,
+  // no PostGIS), so pagination has to happen after the filter rather than
+  // in the Prisma query itself — fetch every candidate order, not just one
+  // page of them.
+  const allOrders = await prisma.order.findMany({
+    where,
+    include: {
+      vendor: {
+        select: {
+          storeName: true,
+          logoUrl: true,
+          address: true,
+          lat: true,
+          lng: true,
         },
-        items: { select: { name: true, qty: true } },
       },
-      orderBy: { createdAt: "asc" },
-      skip,
-      take: limit,
-    }),
-    prisma.order.count({ where }),
-  ]);
+      items: { select: { name: true, qty: true } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // Only surface orders where the rider is close enough to BOTH the pickup
+  // (vendor) and drop-off (customer) — an admin-configurable radius, not a
+  // fixed cutoff. Legs missing coordinates pass through rather than being
+  // silently hidden.
+  const radiusKm = await cfg.orders.riderRadiusKm();
+  const withinRadius = allOrders.filter((o) => {
+    const vendorDistance =
+      rider.currentLat && rider.currentLng && o.vendor.lat && o.vendor.lng
+        ? haversineKm(
+            rider.currentLat,
+            rider.currentLng,
+            o.vendor.lat,
+            o.vendor.lng,
+          )
+        : null;
+    const customerDistance =
+      rider.currentLat && rider.currentLng && o.deliveryLat && o.deliveryLng
+        ? haversineKm(
+            rider.currentLat,
+            rider.currentLng,
+            o.deliveryLat,
+            o.deliveryLng,
+          )
+        : null;
+
+    return (
+      (vendorDistance === null || vendorDistance <= radiusKm) &&
+      (customerDistance === null || customerDistance <= radiusKm)
+    );
+  });
+
+  const total = withinRadius.length;
+  const orders = withinRadius.slice(skip, skip + limit);
 
   const data = orders.map((o) => {
     // Distance from rider to vendor (pickup leg)
@@ -501,10 +623,10 @@ export const acceptOrder = async (
   if (!rider) throw AppError.notFound("Rider profile not found.");
   if (!rider.isOnline)
     throw AppError.badRequest("You must be online to accept orders.");
-  // if (rider.status !== "verified")
-  //   throw AppError.forbidden(
-  //     "Your account is not yet verified for deliveries.",
-  //   );
+  if (rider.status !== "verified")
+    throw AppError.forbidden(
+      "Your account is not yet verified for deliveries.",
+    );
 
   // 2. Fetch Order with User and Vendor User (for emails)
   const order = await prisma.order.findUnique({
@@ -844,12 +966,24 @@ export const getDeliveryDetail = async (userId: string, idParam: string) => {
         lat: order.deliveryLat ?? null,
         lng: order.deliveryLng ?? null,
       },
-      vendorOtp: delivery.vendorOtp,
-      customerOtp: delivery.customerOtp,
+      // Never return the raw OTP codes here — they're only ever emailed to
+      // the vendor/customer. Exposing them to the rider's own app would let
+      // a rider "verify" pickup/delivery without ever actually confronting
+      // the person the code was meant to prove they'd met.
       vendorOtpVerified: delivery.vendorOtpVerified,
       customerOtpVerified: delivery.customerOtpVerified,
       packageSummary: mapPackage(order.items),
       earnings: delivery.earnings,
+      // Lifecycle timestamps + cancellation reason — needed so a completed or
+      // cancelled delivery's detail screen can show what it paid and when
+      // things happened, and so a rider who cancelled with a reason can see
+      // it again later. All already existed as columns on Delivery, just
+      // never selected/returned here.
+      acceptedAt: delivery.acceptedAt,
+      pickedUpAt: delivery.pickedUpAt,
+      deliveredAt: delivery.deliveredAt,
+      cancelledAt: delivery.cancelledAt,
+      cancelReason: delivery.cancelReason,
       // Confirmation media so the delivery details screen can show proof of
       // pickup (rider photographed the food at the vendor) and proof of
       // delivery (rider photographed the handover to the customer), plus the
@@ -906,12 +1040,13 @@ export const updateDeliveryStatus = async (
   userId: string,
   deliveryId: string,
   newStatus: "pending" | "ongoing" | "delivered" | "cancelled",
+  reason?: string,
 ): Promise<{ success: boolean; newStatus: string }> => {
   const rider = await _requireRider(userId);
 
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
-    include: { order: true },
+    include: { order: { include: { items: true } } },
   });
   if (!delivery) throw AppError.notFound("Delivery");
 
@@ -938,7 +1073,9 @@ export const updateDeliveryStatus = async (
         ...(newStatus === "delivered"
           ? { deliveredAt: new Date(), earnings }
           : {}),
-        ...(newStatus === "cancelled" ? { cancelledAt: new Date() } : {}),
+        ...(newStatus === "cancelled"
+          ? { cancelledAt: new Date(), cancelReason: reason ?? null }
+          : {}),
       },
     });
 
@@ -953,6 +1090,30 @@ export const updateDeliveryStatus = async (
         data: {
           totalDeliveries: { increment: 1 },
           totalEarnings: { increment: earnings },
+        },
+      });
+    }
+
+    // The customer already paid — a rider cancelling mid-delivery still owes
+    // them a real resolution, same as a vendor decline. Create a reviewable
+    // RefundRequest (see order.service.ts's cancelOrderByUser/advanceOrderStatus
+    // for the identical pattern used on the other two cancellation paths).
+    if (newStatus === "cancelled") {
+      await tx.refundRequest.create({
+        data: {
+          userId: delivery.order.userId,
+          orderId: delivery.orderId,
+          issue: "Delivery cancelled by rider",
+          description: reason
+            ? `The rider cancelled this delivery in progress. Reason: ${reason}`
+            : "The rider cancelled this delivery in progress.",
+          amountRequested: delivery.order.totalAmount,
+          items: {
+            create: delivery.order.items.map((item) => ({
+              name: item.name,
+              qty: item.qty,
+            })),
+          },
         },
       });
     }
@@ -1030,7 +1191,10 @@ export const verifyCustomerOtp = async (
 
   const delivery = await prisma.delivery.findFirst({
     where: { id: deliveryId, riderId: rider.id },
-    include: { order: true },
+    include: {
+      order: { select: { orderId: true, userId: true } },
+      rider: { select: { user: { select: { fullName: true } } } },
+    },
   });
   if (!delivery) throw AppError.notFound("Delivery");
 
@@ -1049,6 +1213,14 @@ export const verifyCustomerOtp = async (
       where: { id: deliveryId },
       data: { customerOtpVerified: true },
     });
+
+    // Tell the customer their rider has arrived — mirrors the vendor-side
+    // notifyVendorRiderArrived in verifyVendorOtp above, which this lacked.
+    notif.notifyCustomerRiderArrived(
+      delivery.order.userId,
+      delivery.order.orderId,
+      delivery.rider?.user?.fullName ?? "Your rider",
+    );
   }
 
   return { success: true };
@@ -1127,11 +1299,56 @@ const _disburseRiderEarnings = async (
 };
 
 export const resendOtp = async (
-  _userId: string,
-  _deliveryId: string,
-  _party: "vendor" | "customer",
+  userId: string,
+  deliveryId: string,
+  party: "vendor" | "customer",
 ): Promise<{ success: boolean }> => {
-  // In production: resend via SMS/push
+  const rider = await _requireRider(userId);
+
+  // Mirrors the recipient-lookup shape used in acceptOrder's initial OTP send.
+  const delivery = await prisma.delivery.findFirst({
+    where: { id: deliveryId, riderId: rider.id },
+    include: {
+      order: {
+        include: {
+          user: { select: { fullName: true, email: true } },
+          vendor: {
+            include: {
+              user: { select: { fullName: true, email: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!delivery) throw AppError.notFound("Delivery");
+
+  // Resend the EXISTING stored code rather than regenerating — acceptOrder
+  // only ever generates vendorOtp/customerOtp once, at acceptance time, and
+  // the other party may already have that same code on a prior email/receipt.
+  // Regenerating here would silently invalidate it out from under them.
+  if (party === "customer") {
+    const { fullName, email } = delivery.order.user;
+    if (email && delivery.customerOtp) {
+      await sendOtpEmail(
+        email,
+        fullName,
+        delivery.customerOtp,
+        "order-delivery-code",
+      );
+    }
+  } else {
+    const { fullName, email } = delivery.order.vendor.user;
+    if (email && delivery.vendorOtp) {
+      await sendOtpEmail(
+        email,
+        fullName,
+        delivery.vendorOtp,
+        "vendor-pickup-code",
+      );
+    }
+  }
+
   return { success: true };
 };
 
@@ -1256,7 +1473,7 @@ export const uploadDeliveryProof = async (
 export const submitDeliveryIssue = async (
   userId: string,
   deliveryId: string,
-  data: { issues: string[]; note: string },
+  data: { issues: string[]; note: string; attachments?: string[] },
 ): Promise<{ success: boolean }> => {
   const rider = await _requireRider(userId);
   const delivery = await prisma.delivery.findFirst({
@@ -1273,6 +1490,7 @@ export const submitDeliveryIssue = async (
       category: data.issues[0] ?? "other",
       description: `Issues: ${data.issues.join(", ")}. Note: ${data.note}`,
       status: "OPEN",
+      attachments: data.attachments ?? [],
     },
   });
 
@@ -1283,38 +1501,195 @@ export const submitDeliveryIssue = async (
 // Analytics
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getAnalytics = async (userId: string) => {
+export const getAnalytics = async (
+  userId: string,
+  opts?: { filter?: string; startDate?: string; endDate?: string },
+) => {
   const rider = await _requireRider(userId);
 
-  const [totalTx, totalDeliveries, completedDeliveries, cancelledDeliveries] =
-    await Promise.all([
-      prisma.transaction.aggregate({
-        // status: "completed" — analytics should reflect actual earned revenue,
-        // not initiated/pending transactions that may never settle.
-        where: { riderId: rider.id, type: "payment", status: "completed" },
-        _sum: { amount: true },
-        _avg: { amount: true },
-      }),
-      prisma.delivery.count({ where: { riderId: rider.id } }),
-      prisma.delivery.count({
-        where: { riderId: rider.id, status: "delivered" },
-      }),
-      prisma.delivery.count({
-        where: { riderId: rider.id, status: "cancelled" },
-      }),
-    ]);
+  // ── Resolve the requested window ───────────────────────────────────────────
+  // Mirrors vendor.service.ts's getAnalytics: a custom range (calendar picker)
+  // always wins; otherwise named filters (Today / This Week / This Month / …)
+  // resolve to a window ending "now". The end is pushed to the end of its day
+  // so a single-day pick still covers that whole day.
+  const now = new Date();
+  const startOfDay = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  };
+  const endOfDay = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(23, 59, 59, 999);
+    return x;
+  };
+
+  let from: Date | undefined;
+  let to: Date | undefined;
+
+  if (opts?.startDate) {
+    from = startOfDay(new Date(opts.startDate));
+    to = endOfDay(new Date(opts.endDate ?? opts.startDate));
+  } else {
+    switch ((opts?.filter ?? "Today").toLowerCase()) {
+      case "today":
+        from = startOfDay(now);
+        break;
+      case "this week":
+        from = startOfDay(new Date(now.getTime() - 6 * 86_400_000));
+        break;
+      case "this month":
+        from = new Date(now.getFullYear(), now.getMonth(), 1);
+        break;
+      case "this year":
+        from = new Date(now.getFullYear(), 0, 1);
+        break;
+      default:
+        from = undefined; // all-time
+    }
+    to = now;
+  }
+
+  const rangeFilter = (gte?: Date, lte?: Date) =>
+    gte || lte
+      ? { createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } }
+      : {};
+
+  const createdAtFilter = rangeFilter(from, to);
+
+  const startedAtFilter = (gte?: Date, lte?: Date) =>
+    gte || lte
+      ? { startedAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } }
+      : {};
+
+  // ── Previous window of equal length (for growth %) ─────────────────────────
+  let prevFilter: Record<string, unknown> = {};
+  if (from && to) {
+    const span = to.getTime() - from.getTime();
+    const prevTo = new Date(from.getTime() - 1);
+    const prevFrom = new Date(prevTo.getTime() - span);
+    prevFilter = rangeFilter(prevFrom, prevTo);
+  }
+
+  const deliveredWhere = {
+    riderId: rider.id,
+    status: "delivered" as const,
+    ...createdAtFilter,
+  };
+
+  const [
+    totalTx,
+    totalDeliveries,
+    completedDeliveries,
+    cancelledDeliveries,
+    prevTx,
+    prevDeliveries,
+    distanceAgg,
+    deliveredRows,
+    sessions,
+  ] = await Promise.all([
+    prisma.transaction.aggregate({
+      // status: "completed" — analytics should reflect actual earned revenue,
+      // not initiated/pending transactions that may never settle.
+      where: {
+        riderId: rider.id,
+        type: "payment",
+        status: "completed",
+        ...createdAtFilter,
+      },
+      _sum: { amount: true },
+      _avg: { amount: true },
+    }),
+    prisma.delivery.count({ where: { riderId: rider.id, ...createdAtFilter } }),
+    prisma.delivery.count({ where: deliveredWhere }),
+    prisma.delivery.count({
+      where: { riderId: rider.id, status: "cancelled", ...createdAtFilter },
+    }),
+    prisma.transaction.aggregate({
+      where: {
+        riderId: rider.id,
+        type: "payment",
+        status: "completed",
+        ...prevFilter,
+      },
+      _sum: { amount: true },
+    }),
+    prisma.delivery.count({ where: { riderId: rider.id, ...prevFilter } }),
+    prisma.delivery.aggregate({
+      where: deliveredWhere,
+      _sum: { distanceKm: true },
+      _avg: { distanceKm: true },
+    }),
+    prisma.delivery.findMany({
+      where: deliveredWhere,
+      select: { pickedUpAt: true, deliveredAt: true, etaMinutes: true },
+    }),
+    prisma.riderSession.findMany({
+      where: { riderId: rider.id, ...startedAtFilter(from, to) },
+      select: { startedAt: true, endedAt: true },
+    }),
+  ]);
 
   const totalRevenue = totalTx._sum.amount ?? 0;
   const averageOrderValue = Math.round(totalTx._avg.amount ?? 0);
 
+  const pct = (curr: number, prev: number) =>
+    prev > 0 ? Math.round(((curr - prev) / prev) * 100) : curr > 0 ? 100 : 0;
+
+  // ── Distance ─────────────────────────────────────────────────────────────
+  const totalDistanceKm =
+    Math.round((distanceAgg._sum.distanceKm ?? 0) * 10) / 10;
+  const avgDistanceKm =
+    Math.round((distanceAgg._avg.distanceKm ?? 0) * 10) / 10;
+
+  // ── Average delivery time ───────────────────────────────────────────────
+  // Prefer the real pickedUpAt → deliveredAt duration (actual time on the
+  // road); it's more accurate than the pre-trip etaMinutes estimate. Only
+  // fall back to averaging etaMinutes when fewer than half of this period's
+  // delivered rows have both timestamps (e.g. older deliveries recorded
+  // before pickup/delivery timestamps were tracked).
+  const rowsWithTimestamps = deliveredRows.filter(
+    (d) => d.pickedUpAt && d.deliveredAt,
+  );
+  let avgDeliveryMins = 0;
+  if (
+    deliveredRows.length > 0 &&
+    rowsWithTimestamps.length / deliveredRows.length >= 0.5
+  ) {
+    const totalMins = rowsWithTimestamps.reduce(
+      (sum, d) =>
+        sum + (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60_000,
+      0,
+    );
+    avgDeliveryMins = Math.round(totalMins / rowsWithTimestamps.length);
+  } else {
+    const rowsWithEta = deliveredRows.filter((d) => d.etaMinutes != null);
+    avgDeliveryMins =
+      rowsWithEta.length > 0
+        ? Math.round(
+            rowsWithEta.reduce((sum, d) => sum + (d.etaMinutes ?? 0), 0) /
+              rowsWithEta.length,
+          )
+        : 0;
+  }
+
+  // ── Online time ──────────────────────────────────────────────────────────
+  const onlineMs = sessions.reduce(
+    (sum, s) => sum + ((s.endedAt ?? now).getTime() - s.startedAt.getTime()),
+    0,
+  );
+  const onlineHours = Math.floor(onlineMs / 3_600_000);
+  const onlineMinutes = Math.floor((onlineMs % 3_600_000) / 60_000);
+  const onlineTime = `${onlineHours}h ${onlineMinutes}m`;
+
   return {
     totalRevenue,
-    revenueGrowth: 18,
+    revenueGrowth: pct(totalRevenue, prevTx._sum.amount ?? 0),
     pendingEarnings: 0,
     pendingHoursLeft: 0,
     averageOrderValue,
     totalOrders: totalDeliveries,
-    ordersGrowth: 22,
+    ordersGrowth: pct(totalDeliveries, prevDeliveries),
     completedOrders: completedDeliveries,
     completionRate:
       totalDeliveries > 0
@@ -1325,6 +1700,10 @@ export const getAnalytics = async (userId: string) => {
       totalDeliveries > 0
         ? Math.round((cancelledDeliveries / totalDeliveries) * 100)
         : 0,
+    totalDistanceKm,
+    avgDistanceKm,
+    avgDeliveryMins,
+    onlineTime,
   };
 };
 
@@ -1517,6 +1896,8 @@ export const getBankAccounts = async (userId: string) => {
   }));
 };
 
+const MAX_BANK_ACCOUNTS_PER_RIDER = 3;
+
 export const saveBankAccount = async (
   userId: string,
   data: {
@@ -1530,8 +1911,48 @@ export const saveBankAccount = async (
   const count = await prisma.bankAccount.count({
     where: { riderId: rider.id },
   });
+
+  if (count >= MAX_BANK_ACCOUNTS_PER_RIDER) {
+    throw AppError.badRequest(
+      `You can only save up to ${MAX_BANK_ACCOUNTS_PER_RIDER} bank accounts.`,
+    );
+  }
+
+  const duplicate = await prisma.bankAccount.findFirst({
+    where: {
+      riderId: rider.id,
+      accountNumber: data.accountNumber,
+      bankCode: data.bankCode,
+    },
+  });
+  if (duplicate) {
+    throw AppError.badRequest("This bank account is already saved.");
+  }
+
   await prisma.bankAccount.create({
     data: { riderId: rider.id, isPrimary: count === 0, ...data },
+  });
+};
+
+export const updateBankAccount = async (
+  userId: string,
+  bankId: string,
+  data: {
+    bankName?: string;
+    accountName?: string;
+    accountNumber?: string;
+    bankCode?: string;
+  },
+): Promise<void> => {
+  const rider = await _requireRider(userId);
+  const account = await prisma.bankAccount.findFirst({
+    where: { id: bankId, riderId: rider.id },
+  });
+  if (!account) throw AppError.notFound("Bank account");
+
+  await prisma.bankAccount.update({
+    where: { id: bankId },
+    data,
   });
 };
 
@@ -1562,6 +1983,144 @@ export const deleteBankAccount = async (
   });
   if (!account) throw AppError.notFound("Bank account");
   await prisma.bankAccount.delete({ where: { id: bankId } });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Balance & Withdraw (real Paystack payouts — no internal wallet ledger)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Unlike vendors (who have no automatic payout), every completed delivery
+ * already creates an "initiated" payment Transaction row that
+ * _disburseRiderEarnings tries to pay out automatically right after
+ * completion. That only stays "initiated" (unpaid) when the automatic
+ * attempt failed — most commonly because the rider had no primary bank
+ * account yet at delivery time. "Available balance" here is exactly that:
+ * money already earned but not yet successfully paid out.
+ */
+export const getRiderBalance = async (userId: string) => {
+  const rider = await _requireRider(userId);
+
+  const [pendingAgg, paidOutAgg, commission] = await Promise.all([
+    prisma.transaction.aggregate({
+      where: { riderId: rider.id, type: "payment", status: "initiated" },
+      _sum: { amount: true },
+    }),
+    prisma.transaction.aggregate({
+      where: { riderId: rider.id, type: "payment", status: "completed" },
+      _sum: { amount: true },
+    }),
+    cfg.fees.vendorCommission(),
+  ]);
+
+  return {
+    availableBalance: pendingAgg._sum.amount ?? 0,
+    totalWithdrawn: paidOutAgg._sum.amount ?? 0,
+    commissionRate: commission,
+  };
+};
+
+const RIDER_WITHDRAW_RETRY_DELAYS_MS = [1_000, 3_000, 7_000];
+
+/**
+ * Manually retry paying out a rider's pending (already-earned but unpaid)
+ * delivery earnings — settles the oldest "initiated" payment Transaction
+ * rows up to the requested amount, via a real Paystack transfer. Mirrors
+ * vendor.service.ts's withdrawVendorFunds's retry/backoff structure.
+ */
+export const withdrawRiderFunds = async (
+  userId: string,
+  amount: number,
+  bankAccountId: string,
+) => {
+  const rider = await _requireRider(userId);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw AppError.badRequest("Enter a valid withdrawal amount.");
+  }
+
+  const bankAccount = await prisma.bankAccount.findFirst({
+    where: { id: bankAccountId, riderId: rider.id },
+  });
+  if (!bankAccount) throw AppError.notFound("Bank account");
+
+  const { availableBalance } = await getRiderBalance(userId);
+  if (amount > availableBalance) {
+    throw AppError.badRequest("Amount exceeds your available balance.");
+  }
+
+  const pending = await prisma.transaction.findMany({
+    where: { riderId: rider.id, type: "payment", status: "initiated" },
+    orderBy: { createdAt: "asc" },
+  });
+
+  let remaining = amount;
+  const toSettle: typeof pending = [];
+  for (const tx of pending) {
+    if (remaining <= 0) break;
+    toSettle.push(tx);
+    remaining -= tx.amount;
+  }
+
+  if (toSettle.length === 0) {
+    throw AppError.badRequest("No pending earnings to withdraw.");
+  }
+
+  const settleAmount = toSettle.reduce((s, t) => s + t.amount, 0);
+
+  let lastError = "Paystack transfer error";
+  for (
+    let attempt = 0;
+    attempt <= RIDER_WITHDRAW_RETRY_DELAYS_MS.length;
+    attempt++
+  ) {
+    try {
+      const recipientRes = await ps.post("/transferrecipient", {
+        type: "nuban",
+        name: bankAccount.accountName,
+        account_number: bankAccount.accountNumber,
+        bank_code: bankAccount.bankCode,
+        currency: "NGN",
+      });
+      const recipientCode = recipientRes.data.data.recipient_code;
+
+      const transferRes = await ps.post("/transfer", {
+        source: "balance",
+        amount: Math.round(settleAmount * 100),
+        recipient: recipientCode,
+        reason: `Rave rider payout - ${rider.id}`,
+      });
+      const transferCode = transferRes.data.data.transfer_code;
+
+      await prisma.transaction.updateMany({
+        where: { id: { in: toSettle.map((t) => t.id) } },
+        data: { status: "completed", reference: transferCode },
+      });
+
+      return {
+        status: "completed" as const,
+        reference: transferCode,
+        amount: settleAmount,
+      };
+    } catch (err: any) {
+      lastError =
+        err?.response?.data?.message ??
+        err?.message ??
+        "Paystack transfer error";
+
+      if (attempt === RIDER_WITHDRAW_RETRY_DELAYS_MS.length) {
+        throw AppError.badRequest(
+          `Withdrawal could not be completed: ${lastError}. Please try again shortly.`,
+        );
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RIDER_WITHDRAW_RETRY_DELAYS_MS[attempt]),
+      );
+    }
+  }
+
+  throw AppError.badRequest(`Withdrawal failed: ${lastError}`);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1945,9 +2504,13 @@ export const submitRiderDocuments = async (
 ): Promise<{ success: boolean }> => {
   const rider = await _requireRider(userId);
 
+  // Resubmitting — whether after a rejection or just to update an already-
+  // verified rider's documents — sends the rider back into the admin review
+  // queue. Also takes them offline: a rider with unreviewed documents
+  // shouldn't keep accepting deliveries under their old `verified` status.
   await prisma.riderProfile.update({
     where: { id: rider.id },
-    data: { status: "pending" },
+    data: { status: "pending", isOnline: false },
   });
 
   return { success: true };

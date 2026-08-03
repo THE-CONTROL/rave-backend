@@ -22,11 +22,8 @@ export const config = {
   },
 
   jwt: {
-    accessSecret: optional("JWT_ACCESS_SECRET", "dev_access_secret_change_me"),
-    refreshSecret: optional(
-      "JWT_REFRESH_SECRET",
-      "dev_refresh_secret_change_me",
-    ),
+    accessSecret: required("JWT_ACCESS_SECRET"),
+    refreshSecret: required("JWT_REFRESH_SECRET"),
     accessExpiresIn: optional("JWT_ACCESS_EXPIRES_IN", "15m"),
     refreshExpiresIn: optional("JWT_REFRESH_EXPIRES_IN", "30d"),
   },
@@ -40,6 +37,14 @@ export const config = {
     allowedOrigins: optional("ALLOWED_ORIGINS", "http://localhost:3000")
       .split(",")
       .map((o) => o.trim()),
+  },
+
+  // First-admin bootstrap — only runs seedSuperAdmin() if both are set, so
+  // absence is a no-op (never throws) rather than blocking every non-first boot.
+  admin: {
+    bootstrapEmail: process.env.BOOTSTRAP_ADMIN_EMAIL,
+    bootstrapPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD,
+    bootstrapName: optional("BOOTSTRAP_ADMIN_NAME", "Super Admin"),
   },
 
   isDev: optional("NODE_ENV", "development") === "development",

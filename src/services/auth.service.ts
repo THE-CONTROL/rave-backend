@@ -6,6 +6,7 @@ import { AppError } from "../utils/AppError";
 import { generateOtp, generateReferralCode, otpExpiresAt } from "../utils";
 import { issueTokenPair, verifyRefreshToken } from "../utils/jwt";
 import { sendOtpEmail, sendWelcomeEmail } from "../utils/email";
+import { cfg } from "./config.service";
 import {
   SignUpDto,
   SignInDto,
@@ -18,6 +19,15 @@ import {
 
 const SALT_ROUNDS = 12;
 
+// A valid bcrypt hash of an unguessable, never-used password. Compared against
+// on every failed-lookup sign-in attempt so that "no such user" and "wrong
+// password" take the same amount of time — otherwise the missing bcrypt.compare
+// call for a nonexistent email would make account existence timing-detectable.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
+  "dummy-password-for-constant-time-compare",
+  SALT_ROUNDS,
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sign Up
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,11 +37,10 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   });
 
   if (existing) {
-    throw AppError.conflict(
-      existing.email === dto.email
-        ? "An account with this email already exists."
-        : "An account with this phone number already exists.",
-    );
+    // Deliberately generic — naming which field (email vs phone) collided
+    // would let the public signup endpoint be used to enumerate registered
+    // accounts.
+    throw AppError.conflict("An account with these details already exists.");
   }
 
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
@@ -48,7 +57,7 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
     },
   });
 
-  const otp = generateOtp();
+  const otp = generateOtp(await cfg.otp.length());
 
   const profileCreate =
     dto.role === "vendor"
@@ -64,7 +73,7 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
       code: otp,
       purpose: "verify-account",
       userId: user.id,
-      expiresAt: otpExpiresAt(10),
+      expiresAt: otpExpiresAt(await cfg.otp.expiryMinutes()),
     },
   });
 
@@ -103,9 +112,10 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 export const verifyEmail = async (
   dto: VerifyEmailDto,
 ): Promise<{ purpose: string; tokens?: TokenPair; role: Role }> => {
+  // Look up by user+purpose only (not code) so a wrong guess can be counted
+  // against this specific pending OTP rather than silently matching nothing.
   const otpRecord = await prisma.otpCode.findFirst({
     where: {
-      code: dto.code,
       purpose: dto.purpose,
       used: false,
       user: { email: dto.email },
@@ -118,13 +128,26 @@ export const verifyEmail = async (
     throw AppError.badRequest("Invalid or expired OTP code.");
   }
 
-  // Mark OTP used + verify user email concurrently — neither depends on the other
-  const markUsed = prisma.otpCode.update({
-    where: { id: otpRecord.id },
-    data: { used: true },
-  });
+  if (otpRecord.attempts >= (await cfg.otp.maxAttempts())) {
+    throw AppError.badRequest(
+      "Too many incorrect attempts. Please request a new code.",
+    );
+  }
+
+  if (otpRecord.code !== dto.code) {
+    await prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { attempts: { increment: 1 } },
+    });
+    throw AppError.badRequest("Invalid or expired OTP code.");
+  }
 
   if (dto.purpose === "verify-account") {
+    // Mark OTP used + verify user email concurrently — neither depends on the other
+    const markUsed = prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { used: true },
+    });
     const markVerified = prisma.user.update({
       where: { id: otpRecord.userId },
       data: { isEmailVerified: true },
@@ -149,7 +172,9 @@ export const verifyEmail = async (
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
   }
 
-  await markUsed;
+  // reset-password: deliberately leave the OTP unused here — it's re-validated
+  // and only consumed once the password is actually changed in resetPassword()
+  // below, so verifying the code alone can never be used to reset a password.
   return { purpose: "reset-password", role: otpRecord.user.role };
 };
 
@@ -157,11 +182,26 @@ export const verifyEmail = async (
 // Sign In
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Which account roles are allowed to sign in through each client app.
+const AUDIENCE_ROLES: Record<string, Role[]> = {
+  rave: ["user", "vendor"],
+  ridewithrave: ["rider"],
+  "rave-admin": ["admin"],
+};
+
 export const signIn = async (dto: SignInDto): Promise<SignInResult> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
 
-  if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
-    throw AppError.badRequest("Invalid email or password.");
+  // Always run bcrypt.compare, even when no user was found, against a dummy
+  // hash — keeps response time constant so timing can't reveal whether an
+  // email is registered.
+  const passwordMatches = await bcrypt.compare(
+    dto.password,
+    user?.passwordHash ?? DUMMY_PASSWORD_HASH,
+  );
+
+  if (!user || !passwordMatches) {
+    throw AppError.unauthorized("Invalid email or password.");
   }
 
   if (!user.isEmailVerified) {
@@ -170,6 +210,25 @@ export const signIn = async (dto: SignInDto): Promise<SignInResult> => {
 
   if (!user.isActive) {
     throw AppError.forbidden("Your account has been deactivated.");
+  }
+
+  if (!AUDIENCE_ROLES[dto.audience]?.includes(user.role)) {
+    throw AppError.forbidden(
+      "This account isn't set up for this app. Please use the correct Rave app to sign in.",
+    );
+  }
+
+  if (user.role === "admin") {
+    const profile = await prisma.adminProfile.findUnique({
+      where: { userId: user.id },
+    });
+    if (!profile?.isActive) {
+      throw AppError.forbidden("Your admin account has been deactivated.");
+    }
+    await prisma.adminProfile.update({
+      where: { userId: user.id },
+      data: { lastLoginAt: new Date() },
+    });
   }
 
   const tokens = await _createSession(user.id, user.role, user.email);
@@ -204,6 +263,10 @@ export const refreshTokens = async (
   const user = await prisma.user.findUnique({ where: { id: payload.sub } });
   if (!user) throw AppError.unauthorized();
 
+  if (!user.isActive) {
+    throw AppError.forbidden("Your account has been deactivated.");
+  }
+
   return _createSession(user.id, user.role, user.email);
 };
 
@@ -214,13 +277,13 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
-  const otp = generateOtp();
+  const otp = generateOtp(await cfg.otp.length());
   await prisma.otpCode.create({
     data: {
       code: otp,
       purpose: dto.purpose,
       userId: user.id,
-      expiresAt: otpExpiresAt(10),
+      expiresAt: otpExpiresAt(await cfg.otp.expiryMinutes()),
     },
   });
 
@@ -247,12 +310,33 @@ export const resetPassword = async (
   // Verification that password and confirmPassword match is handled by Zod validator
   // We do NOT check the current password here because this is the Forgot Password flow
 
+  // Require the same OTP the user just verified — this is the only proof that
+  // whoever is calling this endpoint actually received the reset code by email.
+  const otpRecord = await prisma.otpCode.findFirst({
+    where: {
+      userId,
+      code: dto.code,
+      purpose: "reset-password",
+      used: false,
+    },
+  });
+
+  if (!otpRecord || otpRecord.expiresAt < new Date()) {
+    throw AppError.badRequest("Invalid or expired code.");
+  }
+
   const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: { passwordHash },
-  });
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    }),
+    prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { used: true },
+    }),
+  ]);
 
   // Security: Invalidate all existing refresh tokens (sessions)
   await prisma.refreshToken.deleteMany({ where: { userId } });
@@ -266,18 +350,18 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   if (!user) return;
 
   await prisma.otpCode.updateMany({
-    where: { userId: user.id, used: false },
+    where: { userId: user.id, used: false, purpose: dto.purpose },
     data: { used: true },
   });
 
-  const otp = generateOtp();
+  const otp = generateOtp(await cfg.otp.length());
 
   await prisma.otpCode.create({
     data: {
       code: otp,
       purpose: dto.purpose,
       userId: user.id,
-      expiresAt: otpExpiresAt(10),
+      expiresAt: otpExpiresAt(await cfg.otp.expiryMinutes()),
     },
   });
 

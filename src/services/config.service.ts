@@ -10,6 +10,7 @@
  */
 
 import { prisma } from "../config/database";
+import { AppError } from "../utils/AppError";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Defaults (used only when DB row is missing)
@@ -26,11 +27,20 @@ const DEFAULTS: Record<string, string> = {
   // Orders
   "orders.cancel_window_secs": "300", // 5 minutes
   "orders.max_cart_vendors": "1",
+  "orders.rider_radius_km": "10", // rider must be within this of both vendor and customer to see an order
+
+  // Catalog
+  "catalog.vendor_radius_km": "10", // vendor must be within this of a customer to appear in "nearby"
 
   // Referral
   "referral.referee_bonus": "1000",
   "referral.referrer_bonus": "1000",
   "referral.min_order_amount": "3000",
+
+  // OTP
+  "otp.length": "6",
+  "otp.expiry_minutes": "10",
+  "otp.max_attempts": "5",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,11 +99,20 @@ export const cfg = {
   },
   orders: {
     cancelWindowSecs: () => int("orders.cancel_window_secs"),
+    riderRadiusKm: () => num("orders.rider_radius_km"),
+  },
+  catalog: {
+    vendorRadiusKm: () => num("catalog.vendor_radius_km"),
   },
   referral: {
     refereeBonus: () => num("referral.referee_bonus"),
     referrerBonus: () => num("referral.referrer_bonus"),
     minOrderAmount: () => num("referral.min_order_amount"),
+  },
+  otp: {
+    length: () => int("otp.length"),
+    expiryMinutes: () => int("otp.expiry_minutes"),
+    maxAttempts: () => int("otp.max_attempts"),
   },
 };
 
@@ -177,7 +196,7 @@ export const updateConfig = async (
   adminId?: string,
 ): Promise<void> => {
   if (isNaN(parseFloat(value)))
-    throw new Error(`Config value for "${key}" must be a number.`);
+    throw AppError.badRequest(`Config value for "${key}" must be a number.`);
 
   await prisma.platformConfig.upsert({
     where: { key },

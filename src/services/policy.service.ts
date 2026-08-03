@@ -180,9 +180,11 @@ export const getRecentRefs = async (
   return { data: [], meta: buildMeta(0, page, limit) };
 };
 
+// Legal documents are versioned (see admin/legal.service.ts) — this always
+// serves the current published version, never a specific historical one.
 export const getLegalDocument = async (role: Role, slug: string) => {
-  const doc = await prisma.legalDocument.findUnique({
-    where: { slug_role: { slug, role } },
+  const doc = await prisma.legalDocument.findFirst({
+    where: { slug, role, isActive: true },
   });
   return doc ?? null;
 };

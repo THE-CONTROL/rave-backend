@@ -86,7 +86,12 @@ router.get("/transactions/:id", ctrl.getTransactionById);
 router.get("/banks", ctrl.getBankAccounts);
 router.post("/banks", validate(v.riderSaveBankSchema), ctrl.saveBankAccount);
 router.patch("/banks/:id/primary", ctrl.setPrimaryBank);
+router.patch("/banks/:id", validate(v.riderUpdateBankSchema), ctrl.updateBankAccount);
 router.delete("/banks/:id", ctrl.deleteBankAccount);
+
+// ── Balance & Withdrawals ───────────────────────────────────────────────────────
+router.get("/balance", ctrl.getBalance);
+router.post("/withdraw", validate(v.riderWithdrawSchema), ctrl.withdraw);
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 router.get("/notifications", ctrl.getNotifications);

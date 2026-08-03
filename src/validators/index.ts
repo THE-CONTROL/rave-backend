@@ -10,6 +10,7 @@ export const signUpSchema = z.object({
   phoneNumber: z
     .string()
     .min(10, "Phone number too short")
+    .max(15, "Phone number too long")
     .regex(/^\+?[0-9]+$/, "Invalid phone number"),
   password: z
     .string()
@@ -30,18 +31,19 @@ export const signUpSchema = z.object({
 export const signInSchema = z.object({
   email: z.string().email("Invalid email"),
   password: z.string().min(1, "Password is required"),
+  audience: z.enum(["rave", "ridewithrave", "rave-admin"]),
 });
 
 export const verifyEmailSchema = z.object({
   code: z.string().length(6, "Code must be 6 digits"),
   purpose: z.enum(["verify-account", "reset-password"]),
   role: z.enum(["user", "vendor", "rider"]).optional(),
-  email: z.string().email().optional(),
+  email: z.string().email("Invalid email"),
 });
 
 export const forgotPasswordSchema = z.object({
   email: z.string().email("Invalid email"),
-  purpose: z.string().min(1, "Purpose is required"),
+  purpose: z.enum(["verify-account", "reset-password"]),
 });
 
 export const resetPasswordSchema = z
@@ -55,6 +57,9 @@ export const resetPasswordSchema = z
       ),
     confirmPassword: z.string(),
     email: z.string().email().optional(), // Used in forgot-password flow
+    // The OTP code the user just verified — required proof of email ownership
+    // before a password can actually be changed.
+    code: z.string().length(6, "Code must be 6 digits"),
   })
   .refine((d) => d.password === d.confirmPassword, {
     message: "Passwords do not match",
@@ -67,7 +72,7 @@ export const refreshTokenSchema = z.object({
 
 export const resendCodeSchema = z.object({
   email: z.string().email("Invalid email"),
-  purpose: z.string().min(1, "Purpose is required"),
+  purpose: z.enum(["verify-account", "reset-password"]),
 });
 
 export const pushTokenSchema = z.object({
@@ -146,6 +151,11 @@ export const createOrderSchema = z.object({
 
 export const cancelOrderSchema = z.object({
   reason: z.string().min(5, "Please provide a cancellation reason"),
+});
+
+export const reportReviewSchema = z.object({
+  reason: z.enum(["inappropriate", "spam", "fake", "other"]),
+  comment: z.string().max(500).optional(),
 });
 
 export const reviewSchema = z.object({
@@ -303,40 +313,59 @@ export const uploadEvidenceSchema = z.object({
   url: z.string().url(),
 });
 
+export const declineRefundSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason").optional(),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor — promotion
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const createPromotionSchema = z.object({
-  title: z.string().min(3, "Title must be at least 3 characters"),
-  subtitle: z.string().optional(),
-  type: z.string().min(2, "Invalid promotion type"),
-  startDate: z.coerce.date(),
-  endDate: z.coerce.date(),
-  description: z.string().optional(),
-  discountValue: z.number().nonnegative().optional().default(0),
-  promoCode: z.string().optional(),
-  minimumOrder: z.number().nonnegative().optional().default(0),
-  maxUses: z.number().int().positive().optional(),
-  // Added fields to match implementation
-  appliesTo: z.enum(["all", "specific"]),
-  productIds: z.array(z.string().uuid()).optional().default([]),
-});
+export const createPromotionSchema = z
+  .object({
+    title: z.string().min(3, "Title must be at least 3 characters"),
+    subtitle: z.string().optional(),
+    type: z.string().min(2, "Invalid promotion type"),
+    startDate: z.coerce.date(),
+    endDate: z.coerce.date(),
+    description: z.string().optional(),
+    discountValue: z.number().nonnegative().optional().default(0),
+    promoCode: z.string().optional(),
+    minimumOrder: z.number().nonnegative().optional().default(0),
+    maxUses: z.number().int().positive().optional(),
+    // Added fields to match implementation
+    appliesTo: z.enum(["all", "specific"]),
+    productIds: z.array(z.string().uuid()).optional().default([]),
+  })
+  .refine((data) => data.endDate > data.startDate, {
+    message: "End date must be after start date",
+    path: ["endDate"],
+  });
 
-export const updatePromotionSchema = z.object({
-  title: z.string().min(3).optional(),
-  subtitle: z.string().optional(),
-  isActive: z.boolean().optional(),
-  endDate: z.coerce.date().optional(),
-  description: z.string().optional(),
-  discountValue: z.number().nonnegative().optional(),
-  promoCode: z.string().optional(),
-  minimumOrder: z.number().nonnegative().optional(),
-  maxUses: z.number().int().positive().optional(),
-  // Added fields for editing product scope
-  appliesTo: z.enum(["all", "specific"]).optional(),
-  productIds: z.array(z.string().uuid()).optional(),
-});
+export const updatePromotionSchema = z
+  .object({
+    title: z.string().min(3).optional(),
+    subtitle: z.string().optional(),
+    isActive: z.boolean().optional(),
+    startDate: z.coerce.date().optional(),
+    endDate: z.coerce.date().optional(),
+    description: z.string().optional(),
+    discountValue: z.number().nonnegative().optional(),
+    promoCode: z.string().optional(),
+    minimumOrder: z.number().nonnegative().optional(),
+    maxUses: z.number().int().positive().optional(),
+    // Added fields for editing product scope
+    appliesTo: z.enum(["all", "specific"]).optional(),
+    productIds: z.array(z.string().uuid()).optional(),
+  })
+  .refine(
+    (data) =>
+      !data.startDate || !data.endDate || data.endDate > data.startDate,
+    {
+      message: "End date must be after start date",
+      path: ["endDate"],
+    },
+  );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vendor — payout
@@ -347,6 +376,11 @@ export const saveBankSchema = z.object({
   name: z.string().min(2),
   accountNumber: z.string().min(10).max(10),
   bankCode: z.string().optional(),
+});
+
+export const vendorWithdrawSchema = z.object({
+  amount: z.number().positive("Enter a valid withdrawal amount"),
+  bankAccountId: z.string().uuid("Invalid bank account"),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -407,6 +441,21 @@ export const vendorSaveBankSchema = z.object({
   bankCode: z.string().optional(),
 });
 
+// Vendor bank (update) — unlike the create schema above (which mirrors the
+// legacy `bank`/`name` naming the create screen still sends), the edit screen
+// (Rave/app/authenticated/bank/[role]/addnewaccount.tsx's `isEditing` branch)
+// already sends the real, readable Prisma column names directly, so this
+// validates against those instead of introducing another `bank`/`name` alias.
+export const vendorUpdateBankSchema = z.object({
+  bankName: z.string().min(2, "Bank name required").optional(),
+  accountName: z.string().min(2, "Account name required").optional(),
+  accountNumber: z
+    .string()
+    .length(10, "Account number must be 10 digits")
+    .optional(),
+  bankCode: z.string().optional(),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Rider validators
 // ─────────────────────────────────────────────────────────────────────────────
@@ -444,13 +493,32 @@ export const riderOtpSchema = z.object({
 export const riderIssueSchema = z.object({
   issues: z.array(z.string()).min(1),
   note: z.string().max(500),
+  attachments: z.array(z.string()).optional(),
 });
 
+// Matches what RideWithRave/app/authenticated/transactions/bank/addnewaccount.tsx
+// actually posts (bankName/accountName), rather than forcing the frontend to
+// adopt the more cryptic bank/name naming used by the vendor's legacy schema.
 export const riderSaveBankSchema = z.object({
-  bank: z.string().min(2),
-  name: z.string().min(2),
+  bankName: z.string().min(2, "Bank name required"),
+  accountName: z.string().min(2, "Account name required"),
   accountNumber: z.string().length(10, "Account number must be 10 digits"),
   bankCode: z.string().optional(),
+});
+
+export const riderUpdateBankSchema = z.object({
+  bankName: z.string().min(2, "Bank name required").optional(),
+  accountName: z.string().min(2, "Account name required").optional(),
+  accountNumber: z
+    .string()
+    .length(10, "Account number must be 10 digits")
+    .optional(),
+  bankCode: z.string().optional(),
+});
+
+export const riderWithdrawSchema = z.object({
+  amount: z.number().positive("Enter a valid withdrawal amount"),
+  bankAccountId: z.string().uuid("Invalid bank account"),
 });
 
 export const riderNotificationSettingsSchema = z.object({
@@ -462,3 +530,246 @@ export const riderNotificationSettingsSchema = z.object({
   reviews: z.boolean().optional(),
   sound: z.string().optional(),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin
+// ─────────────────────────────────────────────────────────────────────────────
+
+const adminRoleEnum = z.enum([
+  "super_admin",
+  "support",
+  "ops",
+  "finance",
+  "content",
+]);
+
+export const createAdminSchema = z.object({
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Invalid email address"),
+  phoneNumber: z
+    .string()
+    .min(10, "Phone number too short")
+    .max(15, "Phone number too long")
+    .regex(/^\+?[0-9]+$/, "Invalid phone number"),
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(
+      /[!@#$%^&*(),.?":{}|<>]/,
+      "Password must contain at least one special character",
+    ),
+  adminRole: adminRoleEnum,
+});
+
+export const updateAdminSchema = z.object({
+  adminRole: adminRoleEnum.optional(),
+  isActive: z.boolean().optional(),
+});
+
+// ── Config ──
+export const updateConfigSchema = z.object({
+  value: z.string().min(1),
+});
+
+// ── Ads ──
+export const createAdSchema = z.object({
+  type: z.enum(["video", "image", "audio", "text"]),
+  contentUri: z.string().url().optional(),
+  headline: z.string().optional(),
+  bodyText: z.string().optional(),
+  ctaText: z.string().optional(),
+  ctaUrl: z.string().url().optional(),
+  duration: z.number().int().positive().optional(),
+  targetRole: z.enum(["user", "vendor", "rider"]).optional(),
+  isActive: z.boolean().default(true),
+});
+
+export const updateAdSchema = createAdSchema.partial();
+
+// ── Onboarding slides ──
+export const createOnboardingSlideSchema = z.object({
+  role: z.enum(["user", "vendor", "rider"]),
+  order: z.number().int(),
+  title: z.string().min(1),
+  description: z.string().optional(),
+  bullets: z.array(z.string()).default([]),
+  imageUrl: z.string().url().optional(),
+  isActive: z.boolean().default(true),
+});
+
+export const updateOnboardingSlideSchema = createOnboardingSlideSchema.partial();
+
+export const reorderOnboardingSlidesSchema = z.object({
+  role: z.enum(["user", "vendor", "rider"]),
+  orderedIds: z.array(z.string().uuid()).min(1),
+});
+
+// ── Vendor approval ──
+export const denyVendorSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason"),
+});
+
+export const suspendVendorSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason").optional(),
+});
+
+// ── Rider verification ──
+export const rejectRiderSchema = z.object({
+  field: z.enum(["bike", "plate", "id", "selfie", "residence"]),
+  reason: z.string().min(3, "Please provide a reason"),
+});
+
+export const suspendRiderSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason").optional(),
+});
+
+// ── Support tickets ──
+export const updateIssueStatusSchema = z.object({
+  status: z.enum(["OPEN", "IN_REVIEW", "RESOLVED"]),
+});
+
+export const respondToIssueSchema = z.object({
+  message: z.string().min(3, "Response is too short"),
+});
+
+// ── Review moderation ──
+export const removeReviewSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason"),
+});
+
+// ── Refunds oversight ──
+export const adminDeclineRefundSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason").optional(),
+});
+
+// ── User management ──
+export const suspendUserSchema = z.object({
+  reason: z.string().min(3, "Please provide a reason").optional(),
+});
+
+// ── Categories ──
+export const toggleCategoryActiveSchema = z.object({
+  isActive: z.boolean(),
+});
+
+// ── Badges ──
+export const createBadgeSchema = z.object({
+  name: z.string().min(2),
+  icon: z.string().min(1),
+  description: z.string().optional(),
+  xpReward: z.number().int().nonnegative().default(0),
+  perks: z.array(z.string()).default([]),
+});
+
+export const updateBadgeSchema = createBadgeSchema.partial();
+
+export const createBadgeRequirementSchema = z.object({
+  label: z.string().min(2),
+  total: z.number().int().positive().optional(),
+});
+
+export const updateBadgeRequirementSchema = createBadgeRequirementSchema.partial();
+
+// ── Help center ──
+export const createHelpCategorySchema = z.object({
+  role: z.enum(["user", "vendor", "rider"]),
+  label: z.string().min(2),
+  icon: z.string().optional(),
+  bg: z.string().optional(),
+  subtitle: z.string().optional(),
+  sortOrder: z.number().int().default(0),
+  isActive: z.boolean().default(true),
+});
+
+export const updateHelpCategorySchema = createHelpCategorySchema.partial();
+
+export const createHelpArticleSchema = z.object({
+  articleId: z.string().min(1),
+  categoryId: z.string().uuid(),
+  role: z.enum(["user", "vendor", "rider"]),
+  title: z.string().min(2),
+  sub: z.string().optional(),
+  popular: z.boolean().default(false),
+  sections: z.array(z.object({ heading: z.string(), body: z.string() })),
+});
+
+export const updateHelpArticleSchema = createHelpArticleSchema.partial();
+
+// ── Legal documents ──
+export const legalSectionSchema = z.object({
+  heading: z.string(),
+  body: z.string(),
+});
+
+export const createLegalDocSchema = z.object({
+  slug: z.string().min(2),
+  role: z.enum(["user", "vendor", "rider", "all"]),
+  lastUpdated: z.string().min(1),
+  intro: z.string().min(1),
+  sections: z.array(legalSectionSchema),
+});
+
+export const publishLegalDocVersionSchema = z.object({
+  lastUpdated: z.string().min(1),
+  intro: z.string().min(1),
+  sections: z.array(legalSectionSchema),
+});
+
+// ── Admin — promotions (admin creates/edits on behalf of a chosen vendor) ──
+export const adminCreatePromotionSchema = z
+  .object({
+    vendorId: z.string().uuid(),
+    title: z.string().min(3, "Title must be at least 3 characters"),
+    subtitle: z.string().optional(),
+    type: z.string().min(2, "Invalid promotion type"),
+    startDate: z.coerce.date(),
+    endDate: z.coerce.date(),
+    description: z.string().optional(),
+    discountValue: z.number().nonnegative().optional().default(0),
+    promoCode: z.string().optional(),
+    minimumOrder: z.number().nonnegative().optional().default(0),
+    maxUses: z.number().int().positive().optional(),
+    appliesTo: z.enum(["all", "specific"]),
+    productIds: z.array(z.string().uuid()).optional().default([]),
+  })
+  .refine((data) => data.endDate > data.startDate, {
+    message: "End date must be after start date",
+    path: ["endDate"],
+  });
+
+export const adminUpdatePromotionSchema = z
+  .object({
+    title: z.string().min(3).optional(),
+    subtitle: z.string().optional(),
+    isActive: z.boolean().optional(),
+    startDate: z.coerce.date().optional(),
+    endDate: z.coerce.date().optional(),
+    description: z.string().optional(),
+    discountValue: z.number().nonnegative().optional(),
+    promoCode: z.string().optional(),
+    minimumOrder: z.number().nonnegative().optional(),
+    maxUses: z.number().int().positive().optional(),
+    appliesTo: z.enum(["all", "specific"]).optional(),
+    productIds: z.array(z.string().uuid()).optional(),
+  })
+  .refine(
+    (data) =>
+      !data.startDate || !data.endDate || data.endDate > data.startDate,
+    {
+      message: "End date must be after start date",
+      path: ["endDate"],
+    },
+  );
+
+// ── Admin — bulk email ──
+export const sendEmailSchema = z
+  .object({
+    subject: z.string().min(3, "Subject is too short"),
+    message: z.string().min(3, "Message is too short"),
+    recipientId: z.string().uuid().optional(),
+    roles: z.array(z.enum(["user", "vendor", "rider"])).optional(),
+  })
+  .refine((d) => !!d.recipientId || (d.roles && d.roles.length > 0), {
+    message: "Specify a recipientId or at least one role.",
+    path: ["roles"],
+  });

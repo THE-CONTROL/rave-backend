@@ -3,8 +3,11 @@ import axios from "axios";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
 import { getCart } from "./user.service";
+import { cfg } from "./config.service";
 
-const ps = axios.create({
+// Exported so other services (e.g. vendor payouts) reuse this single
+// configured client instead of creating their own Paystack axios instance.
+export const ps = axios.create({
   baseURL: "https://api.paystack.co",
   headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
 });
@@ -21,6 +24,11 @@ export const initializeCheckout = async (
   vendorId?: string,
   userId?: string,
   orderId?: string,
+  // The vendor's real order subtotal (item prices + extras, minus discounts —
+  // NOT the customer's full checkout total, which also bundles delivery fee/
+  // VAT/service fee that never belong to the vendor). Only meaningful for
+  // type === "order"; callers for other types simply omit it.
+  vendorSubtotal?: number,
 ) => {
   const titles: Record<string, string> = {
     order: "Order Payment",
@@ -28,6 +36,18 @@ export const initializeCheckout = async (
     referral: "Referral Bonus",
     payment: "General Payment",
   };
+
+  // Compute the real commission fee up front so it's persisted on the
+  // Transaction row at creation time — this is what makes vendor.service.ts's
+  // fee/net breakdown (and the vendor balance calculation) correct instead of
+  // relying on the old `amount / 0.9` guess, which was never actually right
+  // (amount is the customer's gross total, not a net-of-commission figure).
+  let subtotal: number | undefined;
+  let fee: number | undefined;
+  if (type === "order" && vendorSubtotal != null) {
+    subtotal = vendorSubtotal;
+    fee = Math.round(vendorSubtotal * (await cfg.fees.vendorCommission()));
+  }
 
   const initiatedTx = await prisma.transaction.create({
     data: {
@@ -40,6 +60,8 @@ export const initializeCheckout = async (
       title: titles[type] || "Transaction",
       amount,
       paymentMethod,
+      ...(subtotal != null ? { subtotal } : {}),
+      ...(fee != null ? { fee } : {}),
     },
   });
 
@@ -92,7 +114,10 @@ export const initializePayment = async (
 
   const vendorId = items[0].menuItem.vendorId;
 
-  // Pass undefined for orderId — no order exists yet
+  // Pass undefined for orderId — no order exists yet. summary.taxableAmount
+  // is the vendor's real item subtotal (post-discount, pre-VAT/service/
+  // delivery-fee) — see getCart in user.service.ts — which is what commission
+  // must be calculated against, not the customer's full checkout total.
   const payment = await initializeCheckout(
     user.email,
     summary.total,
@@ -101,6 +126,7 @@ export const initializePayment = async (
     vendorId,
     userId,
     undefined,
+    summary.taxableAmount,
   );
 
   // Persist the order intent keyed by the payment reference, so the server can
