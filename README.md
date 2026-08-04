@@ -68,7 +68,7 @@ npm run db:seed
 
 ```bash
 npm run dev
-# → http://localhost:5000/api/v1/health
+# → http://172.22.32.1:5000/api/v1/health
 ```
 
 > **Important:** Always run `db:generate` before `db:migrate` on a fresh clone.

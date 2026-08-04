@@ -71,7 +71,7 @@ export const initializeCheckout = async (
     amount: Math.round(Math.abs(amount) * 100),
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
-    callback_url: "http://localhost:3000/api/v1/payments/callback",
+    callback_url: "http://172.22.32.1:3000/api/v1/payments/callback",
   });
 
   return {
