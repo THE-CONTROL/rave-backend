@@ -174,6 +174,7 @@ export const getDashboard = async (userId: string) => {
     storeLogoUrl: vendor.logoUrl,
     storeName: vendor.storeName,
     storeStatus: vendor.storeStatus,
+    storeStatusReason: vendor.storeStatusReason,
     onboarding: {
       complete: vendor.setupProgress === 5,
       setupProgress: vendor.setupProgress,

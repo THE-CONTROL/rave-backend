@@ -36,7 +36,7 @@ export const config = {
   cors: {
     allowedOrigins: optional(
       "ALLOWED_ORIGINS",
-      "http://kz6eka6ebvyz61m64g34rtxv-133308495920:3000",
+      "http://kz6eka6ebvyz61m64g34rtxv-180613240379:3000",
     )
       .split(",")
       .map((o) => o.trim()),

@@ -1,6 +1,8 @@
 // src/services/admin/badges.service.ts
+import { BadgeMetric } from "@prisma/client";
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
+import { seedBadgeForAllVendors, evaluateAllVendorsForBadge } from "../badgeEvaluation.service";
 
 export const listBadges = () =>
   prisma.badge.findMany({
@@ -25,7 +27,13 @@ export interface BadgeDto {
   perks?: string[];
 }
 
-export const createBadge = (data: BadgeDto) => prisma.badge.create({ data });
+export const createBadge = async (data: BadgeDto) => {
+  const badge = await prisma.badge.create({ data });
+  // No requirements exist yet at this point (added separately below), so
+  // this just seeds tracking rows — there's nothing to actually unlock yet.
+  await seedBadgeForAllVendors(badge.id);
+  return badge;
+};
 
 export const updateBadge = async (id: string, data: Partial<BadgeDto>) => {
   await getBadgeById(id);
@@ -39,12 +47,17 @@ export const deleteBadge = async (id: string) => {
 
 export interface BadgeRequirementDto {
   label: string;
+  metric?: BadgeMetric;
   total?: number;
 }
 
 export const addRequirement = async (badgeId: string, data: BadgeRequirementDto) => {
   await getBadgeById(badgeId);
-  return prisma.badgeRequirement.create({ data: { ...data, badgeId } });
+  const req = await prisma.badgeRequirement.create({ data: { ...data, badgeId } });
+  // A brand-new requirement could already be met by vendors tracking this
+  // badge (e.g. adding "500 orders" to a badge a top vendor already clears).
+  await evaluateAllVendorsForBadge(badgeId);
+  return req;
 };
 
 const _requireRequirement = async (badgeId: string, reqId: string) => {
@@ -59,7 +72,9 @@ export const updateRequirement = async (
   data: Partial<BadgeRequirementDto>,
 ) => {
   await _requireRequirement(badgeId, reqId);
-  return prisma.badgeRequirement.update({ where: { id: reqId }, data });
+  const req = await prisma.badgeRequirement.update({ where: { id: reqId }, data });
+  await evaluateAllVendorsForBadge(badgeId);
+  return req;
 };
 
 export const deleteRequirement = async (badgeId: string, reqId: string) => {

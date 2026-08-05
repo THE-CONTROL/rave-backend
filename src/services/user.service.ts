@@ -14,6 +14,75 @@ import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import * as paymentService from "../services/payment.service";
 import { PaymentMethod } from "@prisma/client";
+import { evaluateVendorBadges } from "./badgeEvaluation.service";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cart/order `extras` Json parsing — shared by getCart and getOrderById
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ParsedExtras {
+  ids: string[];
+  quantities: Record<string, number>;
+}
+
+/**
+ * `extras` has taken two shapes over time: a flat array of ids (ingredients +
+ * choice_selector size ids), and now `{ids, quantities}` once quantity_selector
+ * groups needed somewhere to put a chosen number. Historical cart/order rows
+ * may still hold the old flat-array shape, so both are handled here rather
+ * than migrating existing data.
+ */
+const parseCartExtras = (raw: unknown): ParsedExtras => {
+  if (Array.isArray(raw)) return { ids: raw as string[], quantities: {} };
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.ids)) {
+      return {
+        ids: obj.ids as string[],
+        quantities:
+          obj.quantities && typeof obj.quantities === "object"
+            ? (obj.quantities as Record<string, number>)
+            : {},
+      };
+    }
+    // Even older legacy shape: an object map of id -> true.
+    return {
+      ids: Object.keys(obj).filter((k) => obj[k] === true),
+      quantities: {},
+    };
+  }
+  return { ids: [], quantities: {} };
+};
+
+/** extraCost = one `pricePerExtra` charge per full `quantityPerExtra` block
+ * above `baseQuantity`, clamped to [minQuantity, maxQuantity] server-side —
+ * the chosen quantity is never trusted/priced from the client directly. */
+const priceQuantitySelector = (
+  group: {
+    id: string;
+    name: string;
+    baseQuantity: number | null;
+    pricePerExtra: number | null;
+    quantityPerExtra: number | null;
+    minQuantity: number | null;
+    maxQuantity: number | null;
+  },
+  requestedQty: number,
+): { qty: number; cost: number } | null => {
+  const base = group.baseQuantity ?? 0;
+  const min = group.minQuantity ?? base;
+  const max = group.maxQuantity ?? Number.POSITIVE_INFINITY;
+  const qty = Math.min(Math.max(requestedQty, min), max);
+
+  if (qty === base) return null; // nothing extra chosen — no line item needed
+
+  const perExtra = group.quantityPerExtra || 1;
+  const pricePerExtra = group.pricePerExtra ?? 0;
+  const extraUnits = Math.max(0, qty - base);
+  const cost = Math.floor(extraUnits / perExtra) * pricePerExtra;
+
+  return { qty, cost };
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile Completion
@@ -590,14 +659,7 @@ export const getOrderById = async (userId: string, orderId: string) => {
   return {
     ...order,
     items: order.items.map((item) => {
-      const rawExtras = item.extras;
-      const extrasIds: string[] = Array.isArray(rawExtras)
-        ? (rawExtras as any[]).filter((x): x is string => typeof x === "string")
-        : rawExtras !== null && typeof rawExtras === "object"
-          ? Object.keys(rawExtras as Record<string, unknown>).filter(
-              (k) => (rawExtras as Record<string, unknown>)[k] === true,
-            )
-          : [];
+      const { ids: extrasIds, quantities } = parseCartExtras(item.extras);
 
       const resolvedExtras = item.menuItem.ingredients
         .filter((ing) => extrasIds.includes(ing.id))
@@ -622,6 +684,23 @@ export const getOrderById = async (userId: string, orderId: string) => {
             }
           }
         }
+      }
+
+      // quantity_selector groups: same re-derivation as getCart, from the
+      // quantity recorded in extras.quantities at checkout time.
+      for (const group of item.menuItem.optionGroups ?? []) {
+        if (group.customizationType !== "quantity_selector") continue;
+        const requestedQty = quantities[group.id];
+        if (requestedQty === undefined) continue;
+
+        const priced = priceQuantitySelector(group, requestedQty);
+        if (!priced) continue;
+
+        resolvedExtras.push({
+          id: group.id,
+          name: `${group.name} (x${priced.qty})`,
+          price: priced.cost,
+        });
       }
 
       return {
@@ -934,17 +1013,11 @@ export const getCart = async (userId: string) => {
   const mappedItems = cartItems.map((item) => {
     const basePrice = item.menuItem.price;
 
-    const extras = item.extras as any;
+    const { ids: selectedIds, quantities } = parseCartExtras(item.extras);
     let extrasPrice = 0;
     const selectedExtras: { id: string; name: string; price: number }[] = [];
 
-    if (extras && item.menuItem.ingredients.length > 0) {
-      const selectedIds: string[] = Array.isArray(extras)
-        ? extras
-        : typeof extras === "object"
-          ? Object.keys(extras).filter((k) => extras[k] === true)
-          : [];
-
+    if (item.menuItem.ingredients.length > 0) {
       for (const ing of item.menuItem.ingredients) {
         if (ing.isOptional && selectedIds.includes(ing.id)) {
           const ingPrice = ing.price ?? 0;
@@ -955,32 +1028,43 @@ export const getCart = async (userId: string) => {
     }
 
     // Reusable option-group selections: the customer's chosen option sizes are
-    // stored as ids inside `extras` too. Resolve them against the item's
+    // stored as ids inside `extras.ids` too. Resolve them against the item's
     // attached groups and add each chosen size's extraPrice, so a "Large" or a
     // paid add-on actually changes what the customer is charged.
-    {
-      const selectedIds: string[] = Array.isArray(extras)
-        ? extras
-        : extras && typeof extras === "object"
-          ? Object.keys(extras).filter((k) => extras[k] === true)
-          : [];
-
-      if (selectedIds.length > 0) {
-        for (const group of item.menuItem.optionGroups ?? []) {
-          for (const opt of group.options ?? []) {
-            for (const size of opt.sizes ?? []) {
-              if (selectedIds.includes(size.id) && size.extraPrice > 0) {
-                extrasPrice += size.extraPrice;
-                selectedExtras.push({
-                  id: size.id,
-                  name: `${opt.name} · ${size.name}`,
-                  price: size.extraPrice,
-                });
-              }
+    if (selectedIds.length > 0) {
+      for (const group of item.menuItem.optionGroups ?? []) {
+        for (const opt of group.options ?? []) {
+          for (const size of opt.sizes ?? []) {
+            if (selectedIds.includes(size.id) && size.extraPrice > 0) {
+              extrasPrice += size.extraPrice;
+              selectedExtras.push({
+                id: size.id,
+                name: `${opt.name} · ${size.name}`,
+                price: size.extraPrice,
+              });
             }
           }
         }
       }
+    }
+
+    // quantity_selector groups have no ids/sizes of their own — the chosen
+    // number lives in `extras.quantities`, priced against the group's own
+    // baseQuantity/pricePerExtra/quantityPerExtra terms.
+    for (const group of item.menuItem.optionGroups ?? []) {
+      if (group.customizationType !== "quantity_selector") continue;
+      const requestedQty = quantities[group.id];
+      if (requestedQty === undefined) continue;
+
+      const priced = priceQuantitySelector(group, requestedQty);
+      if (!priced) continue;
+
+      extrasPrice += priced.cost;
+      selectedExtras.push({
+        id: group.id,
+        name: `${group.name} (x${priced.qty})`,
+        price: priced.cost,
+      });
     }
 
     const promo = activePromos.find(
@@ -1108,7 +1192,7 @@ export const addToCart = async (
   userId: string,
   menuItemId: string,
   qty: number,
-  extras?: string[],
+  extras?: { ids: string[]; quantities?: Record<string, number> },
 ): Promise<void> => {
   const item = await prisma.menuItem.findUnique({
     where: { id: menuItemId },
@@ -1143,7 +1227,7 @@ export const addToCart = async (
       userId,
       menuItemId,
       qty,
-      extras: extras ?? [],
+      extras: extras ?? { ids: [] },
     },
     update: {
       qty: { increment: qty },
@@ -1156,7 +1240,7 @@ export const updateCartItem = async (
   userId: string,
   menuItemId: string,
   qty: number,
-  extras?: string[],
+  extras?: { ids: string[]; quantities?: Record<string, number> },
 ): Promise<void> => {
   if (qty <= 0) {
     await prisma.cartItem.deleteMany({ where: { userId, menuItemId } });
@@ -1168,7 +1252,7 @@ export const updateCartItem = async (
       userId,
       menuItemId,
       qty,
-      extras: extras ?? [],
+      extras: extras ?? { ids: [] },
     },
     update: {
       qty,
@@ -1303,6 +1387,7 @@ export const submitReview = async (
     where: { id: order.vendorId },
     data: { averageRating: newAvg, totalReviews, positiveReviews },
   });
+  await evaluateVendorBadges(order.vendorId);
 
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: order.vendorId },

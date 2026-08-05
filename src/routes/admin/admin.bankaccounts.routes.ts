@@ -10,5 +10,6 @@ const router = Router();
 router.use(requireAdminRole("super_admin", "finance"));
 
 router.get("/", ctrl.listBankAccounts);
+router.post("/:id/verify", ctrl.verifyBankAccount);
 
 export default router;

@@ -72,7 +72,7 @@ export const initializeCheckout = async (
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
     callback_url:
-      "http://kz6eka6ebvyz61m64g34rtxv-133308495920:3000/api/v1/payments/callback",
+      "http://kz6eka6ebvyz61m64g34rtxv-180613240379:3000/api/v1/payments/callback",
   });
 
   return {

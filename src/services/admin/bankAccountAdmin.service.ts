@@ -7,6 +7,8 @@
 import { prisma } from "../../config/database";
 import { PaginationQuery } from "../../types";
 import { parsePagination, buildMeta } from "../../utils";
+import { AppError } from "../../utils/AppError";
+import { resolveAccountName } from "../payment.service";
 
 export interface ListBankAccountsQuery extends PaginationQuery {
   search?: string; // account number or account name
@@ -42,4 +44,39 @@ export const listBankAccounts = async (query: ListBankAccountsQuery) => {
   ]);
 
   return { accounts, meta: buildMeta(total, page, limit) };
+};
+
+// Order-independent, case-insensitive comparison — Paystack often resolves
+// "SURNAME FIRSTNAME" while the name on file is "Firstname Surname".
+const namesMatch = (a: string, b: string) => {
+  const normalize = (s: string) =>
+    s
+      .trim()
+      .toUpperCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .sort()
+      .join(" ");
+  return normalize(a) === normalize(b);
+};
+
+/**
+ * Real verification, not a rubber stamp: re-resolves the account number
+ * against Paystack and only flips isVerified if the resolved name matches
+ * the name on file. Never silently trusts what the vendor/rider submitted.
+ */
+export const verifyBankAccount = async (id: string) => {
+  const account = await prisma.bankAccount.findUnique({ where: { id } });
+  if (!account) throw AppError.notFound("Bank account");
+  if (account.isVerified) throw AppError.badRequest("This bank account is already verified.");
+
+  const resolvedName = await resolveAccountName(account.accountNumber, account.bankCode);
+
+  if (!namesMatch(resolvedName, account.accountName)) {
+    throw AppError.badRequest(
+      `Resolved account name "${resolvedName}" does not match the name on file ("${account.accountName}"). Not verified.`,
+    );
+  }
+
+  return prisma.bankAccount.update({ where: { id }, data: { isVerified: true } });
 };

@@ -119,15 +119,24 @@ export const locationSchema = z.object({
 // Cart / checkout
 // ─────────────────────────────────────────────────────────────────────────────
 
+// `ids` covers optional-ingredient ids and choice_selector option-size ids
+// (previously the whole `extras` field, back when it was just a flat array).
+// `quantities` is new: quantity_selector groupId -> chosen quantity, needed
+// since that group type has no ids/sizes of its own to select from.
+const cartExtrasSchema = z.object({
+  ids: z.array(z.string().uuid()).default([]),
+  quantities: z.record(z.string(), z.number().int().nonnegative()).optional(),
+});
+
 export const addToCartSchema = z.object({
   menuItemId: z.string().uuid(),
   qty: z.number().int().positive().max(20),
-  extras: z.array(z.string().uuid()).optional(), // array of ingredient IDs
+  extras: cartExtrasSchema.optional(),
 });
 
 export const updateCartItemSchema = z.object({
   qty: z.number().int().min(0).max(20),
-  extras: z.array(z.string().uuid()).optional(),
+  extras: cartExtrasSchema.optional(),
 });
 
 export const initializePaymentSchema = z.object({
@@ -665,6 +674,7 @@ export const updateBadgeSchema = createBadgeSchema.partial();
 
 export const createBadgeRequirementSchema = z.object({
   label: z.string().min(2),
+  metric: z.enum(["total_orders", "total_revenue", "total_reviews"]).default("total_orders"),
   total: z.number().int().positive().optional(),
 });
 

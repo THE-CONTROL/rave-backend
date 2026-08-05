@@ -41,7 +41,7 @@ export const getRestaurantReviews = asyncHandler(async (req, res) => {
     req.params.id,
     req.query as any,
   );
-  ok(res, result.reviews, "Reviews retrieved.", result.meta);
+  ok(res, result, "Reviews retrieved.");
 });
 
 export const getProductDetails = asyncHandler(async (req, res) => {
@@ -56,7 +56,7 @@ export const getProductReviews = asyncHandler(async (req, res) => {
     req.params.id,
     req.query as any,
   );
-  ok(res, result.reviews, "Reviews retrieved.", result.meta);
+  ok(res, result, "Reviews retrieved.");
 });
 
 export const search = asyncHandler(async (req, res) => {

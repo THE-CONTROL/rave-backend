@@ -11,6 +11,7 @@ import { ORDER_STATUS_TRANSITIONS } from "../constants";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import { getCart } from "./user.service";
+import { evaluateVendorBadges } from "./badgeEvaluation.service";
 
 type OrderStatus =
   | "new"
@@ -202,6 +203,7 @@ export const advanceOrderStatus = async (
       break;
     case "completed":
       await notif.notifyOrderDelivered(order.userId, orderId);
+      await evaluateVendorBadges(vendor.id);
       break;
     case "cancelled":
       await notif.notifyOrderCancelled(order.userId, orderId, "store");

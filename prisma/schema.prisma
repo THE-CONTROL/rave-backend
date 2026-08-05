@@ -756,13 +756,23 @@ model Badge {
 }
 
 model BadgeRequirement {
-  id      String @id @default(uuid())
+  id      String      @id @default(uuid())
   badgeId String
-  badge   Badge  @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+  badge   Badge       @relation(fields: [badgeId], references: [id], onDelete: Cascade)
   label   String // e.g., "Complete 20 orders"
+  // Which real, computable vendor stat `total` is compared against — without
+  // this, nothing could ever tell whether a vendor actually meets a
+  // requirement, since `label` is free text an admin types.
+  metric  BadgeMetric @default(total_orders)
   total   Int?   // The target number (e.g., 20)
 
   @@map("badge_requirements")
+}
+
+enum BadgeMetric {
+  total_orders
+  total_revenue
+  total_reviews
 }
 
 model VendorBadge {

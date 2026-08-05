@@ -7,6 +7,7 @@ import { generateOtp, generateReferralCode, otpExpiresAt } from "../utils";
 import { issueTokenPair, verifyRefreshToken } from "../utils/jwt";
 import { sendOtpEmail, sendWelcomeEmail } from "../utils/email";
 import { cfg } from "./config.service";
+import { seedVendorBadges } from "./badgeEvaluation.service";
 import {
   SignUpDto,
   SignInDto,
@@ -59,11 +60,15 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
   const otp = generateOtp(await cfg.otp.length());
 
+  let newVendorProfileId: string | undefined;
+
   const profileCreate =
     dto.role === "vendor"
-      ? prisma.vendorProfile.create({
-          data: { userId: user.id, storeName: dto.name + "'s Store" },
-        })
+      ? prisma.vendorProfile
+          .create({ data: { userId: user.id, storeName: dto.name + "'s Store" } })
+          .then((vp) => {
+            newVendorProfileId = vp.id;
+          })
       : dto.role === "rider"
         ? prisma.riderProfile.create({ data: { userId: user.id } })
         : Promise.resolve();
@@ -78,6 +83,10 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
   });
 
   await Promise.all([profileCreate, otpCreate]);
+
+  // Gives a new vendor visibility into every badge (locked/in_progress) from
+  // day one, instead of an empty list forever — see badgeEvaluation.service.
+  if (newVendorProfileId) await seedVendorBadges(newVendorProfileId);
 
   // If the user signed up with a referral code, record the referral link now
   // (status "pending"). The bonus is paid later, once they complete a
