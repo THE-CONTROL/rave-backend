@@ -34,7 +34,7 @@ export const config = {
   },
 
   cors: {
-    allowedOrigins: optional("ALLOWED_ORIGINS", "http://172.22.32.1:3000")
+    allowedOrigins: optional("ALLOWED_ORIGINS", "http://localhost:3000")
       .split(",")
       .map((o) => o.trim()),
   },
