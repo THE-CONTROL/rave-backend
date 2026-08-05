@@ -8,6 +8,37 @@ export interface ListReviewReportsQuery extends PaginationQuery {
   reason?: string;
 }
 
+export interface ListReviewsQuery extends PaginationQuery {
+  vendorId?: string;
+  isRemoved?: boolean;
+}
+
+export const listReviews = async (query: ListReviewsQuery) => {
+  const { page, limit, skip } = parsePagination(query);
+
+  const where = {
+    ...(query.vendorId && { vendorId: query.vendorId }),
+    ...(query.isRemoved !== undefined && { isRemoved: query.isRemoved }),
+  };
+
+  const [reviews, total] = await Promise.all([
+    prisma.review.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+      include: {
+        user: { select: { id: true, fullName: true } },
+        vendor: { select: { id: true, storeName: true } },
+        _count: { select: { reports: true } },
+      },
+    }),
+    prisma.review.count({ where }),
+  ]);
+
+  return { reviews, meta: buildMeta(total, page, limit) };
+};
+
 export const listReviewReports = async (query: ListReviewReportsQuery) => {
   const { page, limit, skip } = parsePagination(query);
 

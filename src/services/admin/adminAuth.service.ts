@@ -161,6 +161,10 @@ export const updateAdmin = async (id: string, dto: UpdateAdminDto) => {
   const existing = await prisma.adminProfile.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound("Admin");
 
+  if (existing.adminRole === "super_admin" && dto.isActive === false) {
+    throw AppError.badRequest("Super admin accounts can't be deactivated.");
+  }
+
   return prisma.adminProfile.update({
     where: { id },
     data: dto,
@@ -174,6 +178,10 @@ export const updateAdmin = async (id: string, dto: UpdateAdminDto) => {
 export const deactivateAdmin = async (id: string) => {
   const existing = await prisma.adminProfile.findUnique({ where: { id } });
   if (!existing) throw AppError.notFound("Admin");
+
+  if (existing.adminRole === "super_admin") {
+    throw AppError.badRequest("Super admin accounts can't be deactivated.");
+  }
 
   const updated = await prisma.adminProfile.update({
     where: { id },

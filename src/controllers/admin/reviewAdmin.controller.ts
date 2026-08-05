@@ -19,6 +19,16 @@ export const listReviewReports = asyncHandler(async (req: Request, res: Response
   ok(res, reports, "Success", meta);
 });
 
+export const listReviews = asyncHandler(async (req: Request, res: Response) => {
+  const { vendorId, isRemoved } = req.query;
+  const { reviews, meta } = await reviewAdminService.listReviews({
+    ...extractPagination(req.query),
+    vendorId: vendorId as string | undefined,
+    isRemoved: isRemoved === undefined ? undefined : isRemoved === "true",
+  });
+  ok(res, reviews, "Success", meta);
+});
+
 export const dismissReport = asyncHandler(async (req: Request, res: Response) => {
   const actor = (req as AuthenticatedRequest).user;
   const before = await reviewAdminService.dismissReport(req.params.id);

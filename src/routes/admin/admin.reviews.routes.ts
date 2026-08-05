@@ -9,6 +9,7 @@ const router = Router();
 
 router.use(requireAdminRole("super_admin", "support"));
 
+router.get("/reviews", ctrl.listReviews);
 router.get("/review-reports", ctrl.listReviewReports);
 router.post("/review-reports/:id/dismiss", ctrl.dismissReport);
 router.post("/reviews/:id/remove", validate(removeReviewSchema), ctrl.removeReview);
