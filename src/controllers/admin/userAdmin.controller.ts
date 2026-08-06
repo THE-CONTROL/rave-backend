@@ -24,9 +24,17 @@ export const getUserDetail = asyncHandler(async (req: Request, res: Response) =>
   ok(res, await userAdminService.getUserDetail(req.params.id));
 });
 
+export const listUserNotifications = asyncHandler(async (req: Request, res: Response) => {
+  const { notifications, meta } = await userAdminService.listUserNotifications(
+    req.params.id,
+    extractPagination(req.query),
+  );
+  ok(res, notifications, "Success", meta);
+});
+
 export const suspendUser = asyncHandler(async (req: Request, res: Response) => {
   const actor = (req as AuthenticatedRequest).user;
-  const updated = await userAdminService.suspendUser(req.params.id);
+  const updated = await userAdminService.suspendUser(req.params.id, req.body?.reason, actor.id);
 
   await writeAuditLog({
     adminId: actor.id,

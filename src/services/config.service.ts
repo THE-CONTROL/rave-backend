@@ -185,10 +185,23 @@ export const seedAds = async (): Promise<void> => {
 // Admin CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getAllConfigs = () =>
-  prisma.platformConfig.findMany({
+export const getAllConfigs = async () => {
+  const configs = await prisma.platformConfig.findMany({
     orderBy: [{ group: "asc" }, { key: "asc" }],
   });
+
+  const updaterIds = configs.map((c) => c.updatedBy).filter((id): id is string => !!id);
+  const updaters = await prisma.user.findMany({
+    where: { id: { in: updaterIds } },
+    select: { id: true, fullName: true },
+  });
+  const byId = new Map(updaters.map((u) => [u.id, u]));
+
+  return configs.map((c) => ({
+    ...c,
+    updatedByName: c.updatedBy ? (byId.get(c.updatedBy)?.fullName ?? null) : null,
+  }));
+};
 
 export const updateConfig = async (
   key: string,

@@ -11,6 +11,7 @@ export interface ListFeedbackQuery extends PaginationQuery {
   type?: string;
   role?: Role;
   minRating?: number;
+  userId?: string;
 }
 
 export const listFeedback = async (query: ListFeedbackQuery) => {
@@ -20,6 +21,7 @@ export const listFeedback = async (query: ListFeedbackQuery) => {
     ...(query.type && { type: query.type }),
     ...(query.role && { role: query.role }),
     ...(query.minRating !== undefined && { rating: { gte: query.minRating } }),
+    ...(query.userId && { userId: query.userId }),
   };
 
   const [feedback, total] = await Promise.all([

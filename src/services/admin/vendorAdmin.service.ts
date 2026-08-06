@@ -49,13 +49,23 @@ export const getVendorDetail = async (vendorId: string) => {
       schedules: true,
       bankAccounts: true,
       badges: { include: { badge: true } },
-      _count: { select: { ordersReceived: true, menuItems: true, promotions: true } },
+      // Categories/option groups are the vendor's own small, bounded lists
+      // (unlike orders/menu items/promotions/reviews, which can grow
+      // unbounded and are surfaced as "view all" links to the existing
+      // filtered admin list pages instead of embedding here).
+      categories: { orderBy: { name: "asc" } },
+      optionGroups: { include: { options: { include: { sizes: true } } } },
+      _count: { select: { ordersReceived: true, menuItems: true, promotions: true, reviewsReceived: true } },
     },
   });
   if (!vendor) throw AppError.notFound("Vendor");
 
+  // Revenue earned from orders, NOT payouts already sent to the vendor's
+  // bank (that's `type: "payment"` — see vendor.service.ts's own payout
+  // balance calc). This was summing the wrong transaction type, so the
+  // admin's "Total Revenue" stat was actually showing payout history.
   const revenue = await prisma.transaction.aggregate({
-    where: { vendorId, type: "payment", status: "completed" },
+    where: { vendorId, type: "order", status: "completed" },
     _sum: { amount: true },
   });
 

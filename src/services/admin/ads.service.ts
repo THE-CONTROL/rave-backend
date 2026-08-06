@@ -71,12 +71,19 @@ export const getAdStats = async (id: string) => {
   const ad = await prisma.advertisement.findUnique({ where: { id } });
   if (!ad) throw AppError.notFound("Advertisement");
 
-  const breakdown = await prisma.adEvent.groupBy({
-    by: ["event"],
-    where: { adId: id },
-    _count: true,
-    _avg: { durationViewed: true },
-  });
+  const [breakdown, recentEvents] = await Promise.all([
+    prisma.adEvent.groupBy({
+      by: ["event"],
+      where: { adId: id },
+      _count: true,
+      _avg: { durationViewed: true },
+    }),
+    prisma.adEvent.findMany({
+      where: { adId: id },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
+  ]);
 
   return {
     adId: id,
@@ -85,5 +92,6 @@ export const getAdStats = async (id: string) => {
       count: b._count,
       avgDurationViewed: b._avg.durationViewed ?? 0,
     })),
+    recentEvents,
   };
 };

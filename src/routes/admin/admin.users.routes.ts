@@ -11,6 +11,7 @@ router.use(requireAdminRole("super_admin", "support", "ops"));
 
 router.get("/", ctrl.listUsers);
 router.get("/:id", ctrl.getUserDetail);
+router.get("/:id/notifications", ctrl.listUserNotifications);
 router.post("/:id/suspend", validate(suspendUserSchema), ctrl.suspendUser);
 router.post("/:id/reactivate", ctrl.reactivateUser);
 router.delete("/:id", ctrl.softDeleteUser);

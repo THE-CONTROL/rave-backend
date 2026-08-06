@@ -11,13 +11,19 @@ const auditCtx = (req: Request) => ({
 });
 
 export const listAllRefunds = asyncHandler(async (req: Request, res: Response) => {
-  const { status, vendorId } = req.query;
+  const { status, vendorId, userId } = req.query;
   const { refunds, meta } = await refundAdminService.listAllRefunds({
     ...extractPagination(req.query),
     status: status as any,
     vendorId: vendorId as string | undefined,
+    userId: userId as string | undefined,
   });
   ok(res, refunds, "Success", meta);
+});
+
+export const getRefundDetail = asyncHandler(async (req: Request, res: Response) => {
+  const refund = await refundAdminService.getRefundDetail(req.params.id);
+  ok(res, refund, "Success");
 });
 
 export const forceApproveRefund = asyncHandler(async (req: Request, res: Response) => {

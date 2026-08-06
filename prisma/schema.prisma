@@ -133,6 +133,11 @@ model User {
   isEmailVerified   Boolean   @default(false)
   pushToken         String?
   isActive          Boolean   @default(true)
+  // Previously only written to the audit log, never on the user itself — an
+  // admin viewing this account had no way to see why/when/who suspended it.
+  suspendedReason   String?
+  suspendedAt       DateTime?
+  suspendedBy       String?   // the admin's User id (matches AuditLog.adminId)
   appliedPromoCode  String?   // user-entered cart promo, persists until checkout/clear
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt

@@ -5,12 +5,13 @@ import { extractPagination } from "../../types";
 import { ok, asyncHandler } from "../../utils";
 
 export const listFeedback = asyncHandler(async (req: Request, res: Response) => {
-  const { type, role, minRating } = req.query;
+  const { type, role, minRating, userId } = req.query;
   const { feedback, meta } = await feedbackAdminService.listFeedback({
     ...extractPagination(req.query),
     type: type as string | undefined,
     role: role as any,
     minRating: minRating ? Number(minRating) : undefined,
+    userId: userId as string | undefined,
   });
   ok(res, feedback, "Success", meta);
 });

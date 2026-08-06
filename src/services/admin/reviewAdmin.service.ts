@@ -10,6 +10,8 @@ export interface ListReviewReportsQuery extends PaginationQuery {
 
 export interface ListReviewsQuery extends PaginationQuery {
   vendorId?: string;
+  userId?: string;
+  riderId?: string;
   isRemoved?: boolean;
 }
 
@@ -18,6 +20,10 @@ export const listReviews = async (query: ListReviewsQuery) => {
 
   const where = {
     ...(query.vendorId && { vendorId: query.vendorId }),
+    ...(query.userId && { userId: query.userId }),
+    // Review has no direct riderId column — a review's rider is whoever
+    // delivered its order, so this reaches through order -> delivery.
+    ...(query.riderId && { order: { delivery: { riderId: query.riderId } } }),
     ...(query.isRemoved !== undefined && { isRemoved: query.isRemoved }),
   };
 

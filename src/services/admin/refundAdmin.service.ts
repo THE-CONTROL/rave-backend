@@ -9,6 +9,7 @@ import * as refundProcessing from "../shared/refundProcessing.service";
 export interface ListRefundsQuery extends PaginationQuery {
   status?: RefundStatus;
   vendorId?: string;
+  userId?: string;
 }
 
 // No vendor-ownership filter — that's the entire point of oversight.
@@ -18,6 +19,7 @@ export const listAllRefunds = async (query: ListRefundsQuery) => {
   const where = {
     ...(query.status && { status: query.status }),
     ...(query.vendorId && { order: { vendorId: query.vendorId } }),
+    ...(query.userId && { userId: query.userId }),
   };
 
   const [refunds, total] = await Promise.all([
@@ -36,6 +38,27 @@ export const listAllRefunds = async (query: ListRefundsQuery) => {
   ]);
 
   return { refunds, meta: buildMeta(total, page, limit) };
+};
+
+export const getRefundDetail = async (id: string) => {
+  const refund = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: {
+      user: { select: { id: true, fullName: true, email: true, phone: true } },
+      order: {
+        select: {
+          id: true,
+          orderId: true,
+          vendorId: true,
+          vendor: { select: { storeName: true } },
+          totalAmount: true,
+        },
+      },
+      items: true,
+    },
+  });
+  if (!refund) throw AppError.notFound("Refund request");
+  return refund;
 };
 
 const _requireRefund = async (refundId: string) => {

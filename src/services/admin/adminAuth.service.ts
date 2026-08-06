@@ -126,7 +126,20 @@ export const listAdmins = async (query: ListAdminsQuery) => {
     prisma.adminProfile.count({ where }),
   ]);
 
-  return { admins, meta: buildMeta(total, page, limit) };
+  const creatorIds = admins.map((a) => a.createdBy).filter((id): id is string => !!id);
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, fullName: true },
+  });
+  const byId = new Map(creators.map((u) => [u.id, u]));
+
+  return {
+    admins: admins.map((a) => ({
+      ...a,
+      createdByName: a.createdBy ? (byId.get(a.createdBy)?.fullName ?? null) : "Bootstrap",
+    })),
+    meta: buildMeta(total, page, limit),
+  };
 };
 
 export const getAdminById = async (id: string) => {
@@ -137,7 +150,15 @@ export const getAdminById = async (id: string) => {
     },
   });
   if (!admin) throw AppError.notFound("Admin");
-  return admin;
+
+  const creatorAdmin = admin.createdBy
+    ? await prisma.user.findUnique({ where: { id: admin.createdBy }, select: { fullName: true } })
+    : null;
+
+  return {
+    ...admin,
+    createdByName: admin.createdBy ? (creatorAdmin?.fullName ?? null) : "Bootstrap",
+  };
 };
 
 /** Any signed-in admin's own profile — unlike getAdminById/listAdmins, not super_admin-gated. */

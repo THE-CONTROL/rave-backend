@@ -10,10 +10,11 @@ export interface ListIssuesQuery extends PaginationQuery {
   status?: IssueStatus;
   role?: Role;
   category?: string;
+  userId?: string;
 }
 
-// Admin sees every user's tickets — no userId scoping, unlike the user-facing
-// reads in policy.service.ts (getIssues/getIssueById), which stay untouched.
+// Admin sees every user's tickets by default; userId narrows to one (e.g.
+// from a "View support tickets" link on that user's admin detail page).
 export const listIssues = async (query: ListIssuesQuery) => {
   const { page, limit, skip } = parsePagination(query);
 
@@ -21,6 +22,7 @@ export const listIssues = async (query: ListIssuesQuery) => {
     ...(query.status && { status: query.status }),
     ...(query.role && { role: query.role }),
     ...(query.category && { category: query.category }),
+    ...(query.userId && { userId: query.userId }),
   };
 
   const [issues, total] = await Promise.all([
@@ -43,7 +45,12 @@ export const getIssueDetail = async (id: string) => {
     include: { user: { select: { id: true, fullName: true, email: true, phone: true } } },
   });
   if (!issue) throw AppError.notFound("Support ticket");
-  return issue;
+
+  const respondedByAdmin = issue.respondedBy
+    ? await prisma.user.findUnique({ where: { id: issue.respondedBy }, select: { fullName: true } })
+    : null;
+
+  return { ...issue, respondedByName: respondedByAdmin?.fullName ?? null };
 };
 
 // Forward-only transition, mirroring ORDER_STATUS_TRANSITIONS' pattern.

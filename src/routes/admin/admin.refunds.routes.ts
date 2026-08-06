@@ -10,6 +10,7 @@ const router = Router();
 router.use(requireAdminRole("super_admin", "finance"));
 
 router.get("/", ctrl.listAllRefunds);
+router.get("/:id", ctrl.getRefundDetail);
 router.post("/:id/approve", ctrl.forceApproveRefund);
 router.post("/:id/decline", validate(adminDeclineRefundSchema), ctrl.forceDeclineRefund);
 

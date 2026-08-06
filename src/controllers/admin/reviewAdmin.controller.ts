@@ -20,10 +20,12 @@ export const listReviewReports = asyncHandler(async (req: Request, res: Response
 });
 
 export const listReviews = asyncHandler(async (req: Request, res: Response) => {
-  const { vendorId, isRemoved } = req.query;
+  const { vendorId, userId, riderId, isRemoved } = req.query;
   const { reviews, meta } = await reviewAdminService.listReviews({
     ...extractPagination(req.query),
     vendorId: vendorId as string | undefined,
+    userId: userId as string | undefined,
+    riderId: riderId as string | undefined,
     isRemoved: isRemoved === undefined ? undefined : isRemoved === "true",
   });
   ok(res, reviews, "Success", meta);

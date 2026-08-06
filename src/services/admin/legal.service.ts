@@ -8,8 +8,26 @@ export interface ListLegalDocsQuery {
   includeHistory?: boolean;
 }
 
-export const listLegalDocs = (query: ListLegalDocsQuery) =>
-  prisma.legalDocument.findMany({
+// LegalDocument.createdBy is a raw userId (no relation), so list results are
+// annotated with the admin's name via a batched lookup instead of an include.
+const withCreatedByNames = async <T extends { createdBy: string | null }>(
+  docs: T[],
+): Promise<(T & { createdByName: string | null })[]> => {
+  const creatorIds = docs.map((d) => d.createdBy).filter((id): id is string => !!id);
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, fullName: true },
+  });
+  const byId = new Map(creators.map((u) => [u.id, u]));
+
+  return docs.map((d) => ({
+    ...d,
+    createdByName: d.createdBy ? (byId.get(d.createdBy)?.fullName ?? null) : null,
+  }));
+};
+
+export const listLegalDocs = async (query: ListLegalDocsQuery) => {
+  const docs = await prisma.legalDocument.findMany({
     where: {
       ...(query.slug && { slug: query.slug }),
       ...(query.role && { role: query.role }),
@@ -17,6 +35,8 @@ export const listLegalDocs = (query: ListLegalDocsQuery) =>
     },
     orderBy: [{ slug: "asc" }, { role: "asc" }, { version: "desc" }],
   });
+  return withCreatedByNames(docs);
+};
 
 export const getLegalDocVersion = async (id: string) => {
   const doc = await prisma.legalDocument.findUnique({ where: { id } });
@@ -24,11 +44,13 @@ export const getLegalDocVersion = async (id: string) => {
   return doc;
 };
 
-export const getVersionHistory = (slug: string, role: string) =>
-  prisma.legalDocument.findMany({
+export const getVersionHistory = async (slug: string, role: string) => {
+  const docs = await prisma.legalDocument.findMany({
     where: { slug, role },
     orderBy: { version: "desc" },
   });
+  return withCreatedByNames(docs);
+};
 
 export interface LegalDocContent {
   lastUpdated: string;

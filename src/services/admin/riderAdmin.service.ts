@@ -33,7 +33,7 @@ export const listRiders = async (query: ListRidersQuery) => {
       skip,
       take: limit,
       include: {
-        user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true } },
+        user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, imageUrl: true } },
       },
     }),
     prisma.riderProfile.count({ where }),
@@ -46,9 +46,12 @@ export const getRiderDetail = async (riderId: string) => {
   const rider = await prisma.riderProfile.findUnique({
     where: { id: riderId },
     include: {
-      user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, createdAt: true } },
+      user: {
+        select: { id: true, fullName: true, email: true, phone: true, isActive: true, imageUrl: true, createdAt: true },
+      },
       bankAccounts: true,
       sessions: { orderBy: { startedAt: "desc" }, take: 20 },
+      locationHistory: { orderBy: { createdAt: "desc" }, take: 20 },
       _count: { select: { deliveries: true } },
     },
   });
