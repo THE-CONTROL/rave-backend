@@ -9,7 +9,7 @@
 import { BadgeMetric } from "@prisma/client";
 import { prisma } from "../config/database";
 
-const computeMetricValue = async (
+export const computeMetricValue = async (
   vendorId: string,
   metric: BadgeMetric,
 ): Promise<number> => {
@@ -29,6 +29,13 @@ const computeMetricValue = async (
         select: { totalReviews: true },
       });
       return vendor?.totalReviews ?? 0;
+    }
+    case "average_rating": {
+      const vendor = await prisma.vendorProfile.findUnique({
+        where: { id: vendorId },
+        select: { averageRating: true },
+      });
+      return vendor?.averageRating ?? 0;
     }
   }
 };

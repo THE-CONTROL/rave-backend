@@ -674,8 +674,9 @@ export const updateBadgeSchema = createBadgeSchema.partial();
 
 export const createBadgeRequirementSchema = z.object({
   label: z.string().min(2),
-  metric: z.enum(["total_orders", "total_revenue", "total_reviews"]).default("total_orders"),
-  total: z.number().int().positive().optional(),
+  metric: z.enum(["total_orders", "total_revenue", "total_reviews", "average_rating"]).default("total_orders"),
+  // Not .int(): average_rating targets are fractional (e.g. 4.5 stars).
+  total: z.number().positive().optional(),
 });
 
 export const updateBadgeRequirementSchema = createBadgeRequirementSchema.partial();

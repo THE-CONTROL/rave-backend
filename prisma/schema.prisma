@@ -769,7 +769,8 @@ model BadgeRequirement {
   // this, nothing could ever tell whether a vendor actually meets a
   // requirement, since `label` is free text an admin types.
   metric  BadgeMetric @default(total_orders)
-  total   Int?   // The target number (e.g., 20)
+  // Float, not Int: average_rating targets are fractional (e.g. 4.5 stars).
+  total   Float?  // The target number (e.g., 20, or 4.5 for a rating)
 
   @@map("badge_requirements")
 }
@@ -778,6 +779,9 @@ enum BadgeMetric {
   total_orders
   total_revenue
   total_reviews
+  // VendorProfile.averageRating — lets a badge gate on service quality, not
+  // just volume (mirrors real marketplaces' "highly rated" recognition).
+  average_rating
 }
 
 model VendorBadge {
@@ -787,9 +791,11 @@ model VendorBadge {
   badgeId   String
   badge     Badge         @relation(fields: [badgeId], references: [id])
   state     BadgeState    @default(in_progress)
-  
+
   // Progress tracking
-  current   Int           @default(0) // Current progress count across requirements
+  // Float, not Int: tracks whichever requirement is furthest from
+  // completion, which may be an average_rating (fractional) metric.
+  current   Float         @default(0) // Current progress count across requirements
   earnedAt  DateTime?
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt

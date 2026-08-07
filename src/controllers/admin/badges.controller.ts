@@ -2,7 +2,7 @@
 import { Request, Response } from "express";
 import * as badgesService from "../../services/admin/badges.service";
 import { writeAuditLog } from "../../services/admin/auditLog.service";
-import { AuthenticatedRequest } from "../../types";
+import { AuthenticatedRequest, extractPagination } from "../../types";
 import { ok, created, noContent, asyncHandler } from "../../utils";
 
 const auditCtx = (req: Request) => ({
@@ -16,6 +16,14 @@ export const listBadges = asyncHandler(async (_req: Request, res: Response) => {
 
 export const getBadgeById = asyncHandler(async (req: Request, res: Response) => {
   ok(res, await badgesService.getBadgeById(req.params.id));
+});
+
+export const getBadgeVendors = asyncHandler(async (req: Request, res: Response) => {
+  const { vendorBadges, meta } = await badgesService.getBadgeVendors(
+    req.params.id,
+    extractPagination(req.query),
+  );
+  ok(res, vendorBadges, "Success", meta);
 });
 
 export const createBadge = asyncHandler(async (req: Request, res: Response) => {

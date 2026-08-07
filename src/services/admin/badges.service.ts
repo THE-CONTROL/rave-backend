@@ -2,6 +2,8 @@
 import { BadgeMetric } from "@prisma/client";
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
+import { PaginationQuery } from "../../types";
+import { parsePagination, buildMeta } from "../../utils";
 import { seedBadgeForAllVendors, evaluateAllVendorsForBadge } from "../badgeEvaluation.service";
 
 export const listBadges = () =>
@@ -80,4 +82,22 @@ export const updateRequirement = async (
 export const deleteRequirement = async (badgeId: string, reqId: string) => {
   await _requireRequirement(badgeId, reqId);
   await prisma.badgeRequirement.delete({ where: { id: reqId } });
+};
+
+export const getBadgeVendors = async (badgeId: string, query: PaginationQuery) => {
+  await getBadgeById(badgeId);
+  const { page, limit, skip } = parsePagination(query);
+
+  const [vendorBadges, total] = await Promise.all([
+    prisma.vendorBadge.findMany({
+      where: { badgeId },
+      include: { vendor: { select: { id: true, storeName: true, logoUrl: true } } },
+      orderBy: [{ state: "desc" }, { current: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.vendorBadge.count({ where: { badgeId } }),
+  ]);
+
+  return { vendorBadges, meta: buildMeta(total, page, limit) };
 };

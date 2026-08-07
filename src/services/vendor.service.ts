@@ -7,9 +7,11 @@ import {
   maskAccountNumber,
   parsePagination,
   pickReviewTags,
+  relativeTimeAgo,
   resolveDateRange,
   resolveSort,
 } from "../utils";
+import { computeMetricValue } from "./badgeEvaluation.service";
 import { PaginationQuery } from "../types";
 import { VendorNotificationSettingsPayload } from "../types/notifications";
 import { format } from "date-fns"; //
@@ -1837,6 +1839,11 @@ export const getBadges = async (userId: string) => {
   });
 };
 
+// Shapes the raw VendorBadge row into the `BadgeDetail` the mobile detail
+// screen actually reads (about/progressPercent/requirements[].completed/
+// reward.perks/earnedAgo) — VendorBadge.current is only a single "furthest
+// behind" progress number shared across all requirements, so per-requirement
+// current/completed values are computed live here instead.
 export const getBadgeById = async (userId: string, badgeId: string) => {
   const vendor = await _requireVendor(userId);
   const vb = await prisma.vendorBadge.findFirst({
@@ -1844,7 +1851,45 @@ export const getBadgeById = async (userId: string, badgeId: string) => {
     include: { badge: { include: { requirements: true } } },
   });
   if (!vb) throw AppError.notFound("Badge");
-  return vb;
+
+  const requirements = await Promise.all(
+    vb.badge.requirements.map(async (req) => {
+      const current = await computeMetricValue(vendor.id, req.metric);
+      return {
+        id: req.id,
+        label: req.label,
+        total: req.total,
+        current,
+        completed: req.total != null ? current >= req.total : false,
+      };
+    }),
+  );
+
+  const progressPercent =
+    vb.state === "unlocked"
+      ? 100
+      : requirements.length === 0
+        ? 0
+        : Math.round(
+            Math.min(
+              100,
+              Math.min(
+                ...requirements.map((r) => (r.total ? (r.current / r.total) * 100 : 100)),
+              ),
+            ),
+          );
+
+  return {
+    id: vb.id,
+    name: vb.badge.name,
+    icon: vb.badge.icon,
+    state: vb.state,
+    about: vb.badge.description ?? "",
+    progressPercent,
+    earnedAgo: vb.earnedAt ? relativeTimeAgo(vb.earnedAt) : undefined,
+    requirements,
+    reward: { xp: vb.badge.xpReward, perks: vb.badge.perks },
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

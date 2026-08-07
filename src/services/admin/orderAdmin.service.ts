@@ -46,7 +46,14 @@ export const listOrders = async (query: ListOrdersQuery) => {
       include: {
         user: { select: { id: true, fullName: true, email: true } },
         vendor: { select: { id: true, storeName: true } },
-        delivery: { select: { id: true, status: true, riderId: true } },
+        delivery: {
+          select: {
+            id: true,
+            status: true,
+            riderId: true,
+            rider: { select: { user: { select: { fullName: true } } } },
+          },
+        },
       },
     }),
     prisma.order.count({ where }),

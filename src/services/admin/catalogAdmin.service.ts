@@ -75,6 +75,7 @@ export const listOptionGroups = async (query: ListOptionGroupsQuery) => {
       include: {
         vendor: { select: { id: true, storeName: true } },
         options: { include: { sizes: true } },
+        menuItems: { select: { id: true, name: true } },
       },
     }),
     prisma.optionGroup.count({ where }),

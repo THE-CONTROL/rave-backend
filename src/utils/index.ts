@@ -118,6 +118,19 @@ export const formatDistance = (km: number): string => {
 export const estimateEtaMinutes = (km: number): number =>
   Math.max(10, Math.round((km / 30) * 60));
 
+/** Formats a past Date as "2 hours ago" / "3 days ago" / a short date. */
+export const relativeTimeAgo = (date: Date): string => {
+  const diff = Date.now() - date.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min${mins === 1 ? "" : "s"} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Date-range filter helper (shared by orders + transactions list filtering)
 // ─────────────────────────────────────────────────────────────────────────────

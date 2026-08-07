@@ -34,7 +34,7 @@ export const listDeliveries = async (query: ListDeliveriesQuery) => {
       take: limit,
       include: {
         rider: { select: { id: true, user: { select: { fullName: true, phone: true } } } },
-        order: { select: { id: true, orderId: true, deliveryAddress: true, vendor: { select: { storeName: true } } } },
+        order: { select: { id: true, orderId: true, deliveryAddress: true, vendor: { select: { id: true, storeName: true } } } },
       },
     }),
     prisma.delivery.count({ where }),
@@ -54,7 +54,7 @@ export const getDeliveryDetail = async (id: string) => {
           orderId: true,
           deliveryAddress: true,
           status: true,
-          vendor: { select: { storeName: true, address: true } },
+          vendor: { select: { id: true, storeName: true, address: true } },
           user: { select: { fullName: true, phone: true } },
         },
       },

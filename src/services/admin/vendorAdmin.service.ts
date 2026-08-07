@@ -54,7 +54,12 @@ export const getVendorDetail = async (vendorId: string) => {
       // unbounded and are surfaced as "view all" links to the existing
       // filtered admin list pages instead of embedding here).
       categories: { orderBy: { name: "asc" } },
-      optionGroups: { include: { options: { include: { sizes: true } } } },
+      optionGroups: {
+        include: {
+          options: { include: { sizes: true } },
+          menuItems: { select: { id: true, name: true } },
+        },
+      },
       _count: { select: { ordersReceived: true, menuItems: true, promotions: true, reviewsReceived: true } },
     },
   });

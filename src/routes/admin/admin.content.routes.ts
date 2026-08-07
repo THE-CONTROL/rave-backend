@@ -73,6 +73,7 @@ router.patch(
 router.get("/badges", badgesCtrl.listBadges);
 router.post("/badges", validate(createBadgeSchema), badgesCtrl.createBadge);
 router.get("/badges/:id", badgesCtrl.getBadgeById);
+router.get("/badges/:id/vendors", badgesCtrl.getBadgeVendors);
 router.patch("/badges/:id", validate(updateBadgeSchema), badgesCtrl.updateBadge);
 router.delete("/badges/:id", badgesCtrl.deleteBadge);
 router.post(
