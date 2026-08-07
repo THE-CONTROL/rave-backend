@@ -32,7 +32,7 @@ export const listVendors = async (query: ListVendorsQuery) => {
       skip,
       take: limit,
       include: {
-        user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true } },
+        user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, imageUrl: true } },
       },
     }),
     prisma.vendorProfile.count({ where }),
@@ -45,7 +45,7 @@ export const getVendorDetail = async (vendorId: string) => {
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
     include: {
-      user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, createdAt: true } },
+      user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, imageUrl: true, createdAt: true } },
       schedules: true,
       bankAccounts: true,
       badges: { include: { badge: true } },
