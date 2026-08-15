@@ -4,11 +4,14 @@ import { AppError } from "../../utils/AppError";
 
 // ── Categories ──
 
+// Deliberately un-paginated: admin-managed content, realistically a handful
+// of categories/articles. `take` is only a safety cap, not real pagination.
 export const listHelpCategories = (role?: string) =>
   prisma.helpCategory.findMany({
     where: role ? { role } : undefined,
     orderBy: [{ role: "asc" }, { sortOrder: "asc" }],
-    include: { articles: true },
+    include: { articles: { take: 200 } },
+    take: 200,
   });
 
 export const getHelpCategoryById = async (id: string) => {
@@ -52,6 +55,7 @@ export const listHelpArticles = (categoryId?: string) =>
   prisma.helpArticle.findMany({
     where: categoryId ? { categoryId } : undefined,
     orderBy: { createdAt: "asc" },
+    take: 200,
   });
 
 export const getHelpArticleById = async (id: string) => {

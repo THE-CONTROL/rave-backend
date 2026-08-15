@@ -26,6 +26,8 @@ const withCreatedByNames = async <T extends { createdBy: string | null }>(
   }));
 };
 
+// Deliberately un-paginated: admin-managed content, realistically a handful
+// of policy documents. `take` is only a safety cap, not real pagination.
 export const listLegalDocs = async (query: ListLegalDocsQuery) => {
   const docs = await prisma.legalDocument.findMany({
     where: {
@@ -34,6 +36,7 @@ export const listLegalDocs = async (query: ListLegalDocsQuery) => {
       ...(!query.includeHistory && { isActive: true }),
     },
     orderBy: [{ slug: "asc" }, { role: "asc" }, { version: "desc" }],
+    take: 200,
   });
   return withCreatedByNames(docs);
 };
@@ -48,6 +51,7 @@ export const getVersionHistory = async (slug: string, role: string) => {
   const docs = await prisma.legalDocument.findMany({
     where: { slug, role },
     orderBy: { version: "desc" },
+    take: 200,
   });
   return withCreatedByNames(docs);
 };

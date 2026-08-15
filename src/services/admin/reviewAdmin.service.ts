@@ -13,6 +13,7 @@ export interface ListReviewsQuery extends PaginationQuery {
   userId?: string;
   riderId?: string;
   isRemoved?: boolean;
+  search?: string;
 }
 
 export const listReviews = async (query: ListReviewsQuery) => {
@@ -25,6 +26,13 @@ export const listReviews = async (query: ListReviewsQuery) => {
     // delivered its order, so this reaches through order -> delivery.
     ...(query.riderId && { order: { delivery: { riderId: query.riderId } } }),
     ...(query.isRemoved !== undefined && { isRemoved: query.isRemoved }),
+    ...(query.search && {
+      OR: [
+        { comment: { contains: query.search, mode: "insensitive" as const } },
+        { vendor: { storeName: { contains: query.search, mode: "insensitive" as const } } },
+        { user: { fullName: { contains: query.search, mode: "insensitive" as const } } },
+      ],
+    }),
   };
 
   const [reviews, total] = await Promise.all([

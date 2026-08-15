@@ -11,6 +11,7 @@ export interface ListIssuesQuery extends PaginationQuery {
   role?: Role;
   category?: string;
   userId?: string;
+  search?: string;
 }
 
 // Admin sees every user's tickets by default; userId narrows to one (e.g.
@@ -23,6 +24,9 @@ export const listIssues = async (query: ListIssuesQuery) => {
     ...(query.role && { role: query.role }),
     ...(query.category && { category: query.category }),
     ...(query.userId && { userId: query.userId }),
+    ...(query.search && {
+      title: { contains: query.search, mode: "insensitive" as const },
+    }),
   };
 
   const [issues, total] = await Promise.all([

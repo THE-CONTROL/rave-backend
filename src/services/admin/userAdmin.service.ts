@@ -162,6 +162,79 @@ export const listUserNotifications = async (userId: string, query: ListUserNotif
   return { notifications, meta: buildMeta(total, page, limit) };
 };
 
+export interface ListUserSearchHistoryQuery extends PaginationQuery {}
+
+export const listUserSearchHistory = async (userId: string, query: ListUserSearchHistoryQuery) => {
+  await _requireUser(userId);
+  const { page, limit, skip } = parsePagination(query);
+
+  const [searches, total] = await Promise.all([
+    prisma.searchHistory.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.searchHistory.count({ where: { userId } }),
+  ]);
+
+  return { searches, meta: buildMeta(total, page, limit) };
+};
+
+export interface ListUserCartQuery extends PaginationQuery {}
+
+export const listUserCart = async (userId: string, query: ListUserCartQuery) => {
+  await _requireUser(userId);
+  const { page, limit, skip } = parsePagination(query);
+
+  const [items, total] = await Promise.all([
+    prisma.cartItem.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+      include: { menuItem: { select: { id: true, name: true, price: true } } },
+    }),
+    prisma.cartItem.count({ where: { userId } }),
+  ]);
+
+  return { items, meta: buildMeta(total, page, limit) };
+};
+
+export interface ListUserFavoritesQuery extends PaginationQuery {}
+
+export const listUserFavorites = async (userId: string, query: ListUserFavoritesQuery) => {
+  await _requireUser(userId);
+  const { page, limit, skip } = parsePagination(query);
+
+  const [restaurants, restaurantsTotal, products, productsTotal] = await Promise.all([
+    prisma.favoriteRestaurant.findMany({
+      where: { userId },
+      skip,
+      take: limit,
+      include: { vendor: { select: { id: true, storeName: true, logoUrl: true } } },
+    }),
+    prisma.favoriteRestaurant.count({ where: { userId } }),
+    prisma.favoriteProduct.findMany({
+      where: { userId },
+      skip,
+      take: limit,
+      include: {
+        vendor: { select: { id: true, storeName: true } },
+        menuItem: { select: { id: true, name: true, price: true } },
+      },
+    }),
+    prisma.favoriteProduct.count({ where: { userId } }),
+  ]);
+
+  return {
+    restaurants,
+    restaurantsMeta: buildMeta(restaurantsTotal, page, limit),
+    products,
+    productsMeta: buildMeta(productsTotal, page, limit),
+  };
+};
+
 export const suspendUser = async (userId: string, reason: string | undefined, adminId: string) => {
   await _requireUser(userId);
   const updated = await prisma.user.update({

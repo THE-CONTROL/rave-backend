@@ -46,7 +46,11 @@ router.patch(
 );
 router.delete("/cart/:menuItemId", ctrl.removeFromCart);
 router.delete("/cart", ctrl.clearCart);
-router.post("/cart/promo", ctrl.previewPromo);
+router.post(
+  "/cart/promo",
+  validate(v.cartPromoSchema),
+  ctrl.previewPromo,
+);
 router.delete("/cart/promo", ctrl.removePromo);
 // ── Payment ───────────────────────────────────────────────────────────────────
 // Initialize Paystack payment — no order created yet

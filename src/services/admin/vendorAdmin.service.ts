@@ -3,8 +3,9 @@ import { StoreStatus } from "@prisma/client";
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
 import { PaginationQuery } from "../../types";
-import { parsePagination, buildMeta } from "../../utils";
+import { parsePagination, buildMeta, maskAccountNumber } from "../../utils";
 import { notifyVendorStatusChanged } from "../../events/notification.events";
+import { decrypt } from "../../utils/crypto";
 
 export interface ListVendorsQuery extends PaginationQuery {
   storeStatus?: StoreStatus;
@@ -45,7 +46,18 @@ export const getVendorDetail = async (vendorId: string) => {
   const vendor = await prisma.vendorProfile.findUnique({
     where: { id: vendorId },
     include: {
-      user: { select: { id: true, fullName: true, email: true, phone: true, isActive: true, imageUrl: true, createdAt: true } },
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          isActive: true,
+          imageUrl: true,
+          createdAt: true,
+          notificationSettings: true,
+        },
+      },
       schedules: true,
       bankAccounts: true,
       badges: { include: { badge: true } },
@@ -74,7 +86,14 @@ export const getVendorDetail = async (vendorId: string) => {
     _sum: { amount: true },
   });
 
-  return { ...vendor, totalRevenue: revenue._sum.amount ?? 0 };
+  // Mask the account number — bankAccounts.accountNumber is stored encrypted;
+  // never send the raw decrypted value (or, worse, raw ciphertext) to a client.
+  const bankAccounts = vendor.bankAccounts.map((b) => ({
+    ...b,
+    accountNumber: maskAccountNumber(decrypt(b.accountNumber)),
+  }));
+
+  return { ...vendor, bankAccounts, totalRevenue: revenue._sum.amount ?? 0 };
 };
 
 const _requireVendor = async (vendorId: string) => {

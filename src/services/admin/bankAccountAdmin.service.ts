@@ -6,9 +6,10 @@
 // check. Read-only.
 import { prisma } from "../../config/database";
 import { PaginationQuery } from "../../types";
-import { parsePagination, buildMeta } from "../../utils";
+import { parsePagination, buildMeta, maskAccountNumber } from "../../utils";
 import { AppError } from "../../utils/AppError";
 import { resolveAccountName } from "../payment.service";
+import { decrypt, encryptSearchable } from "../../utils/crypto";
 
 export interface ListBankAccountsQuery extends PaginationQuery {
   search?: string; // account number or account name
@@ -18,12 +19,23 @@ export interface ListBankAccountsQuery extends PaginationQuery {
 export const listBankAccounts = async (query: ListBankAccountsQuery) => {
   const { page, limit, skip } = parsePagination(query);
 
+  // accountNumber is now stored encrypted (deterministically, via
+  // encryptSearchable) — a plaintext `contains` substring search against it
+  // can never match ciphertext, but an *exact* full account number still
+  // matches after encrypting the search term the same way. Partial-number
+  // search is no longer possible without decrypting every row; exact search
+  // and name search both still work.
+  const search = query.search?.trim();
+  const looksLikeFullAccountNumber = !!search && /^\d{10}$/.test(search);
+
   const where = {
     ...(query.isVerified !== undefined && { isVerified: query.isVerified }),
-    ...(query.search && {
+    ...(search && {
       OR: [
-        { accountNumber: { contains: query.search } },
-        { accountName: { contains: query.search, mode: "insensitive" as const } },
+        ...(looksLikeFullAccountNumber
+          ? [{ accountNumber: encryptSearchable(search) }]
+          : []),
+        { accountName: { contains: search, mode: "insensitive" as const } },
       ],
     }),
   };
@@ -43,7 +55,15 @@ export const listBankAccounts = async (query: ListBankAccountsQuery) => {
     prisma.bankAccount.count({ where }),
   ]);
 
-  return { accounts, meta: buildMeta(total, page, limit) };
+  // Mask before returning — admins get the same masked view as vendors/
+  // riders do of their own accounts; verifyBankAccount below is the one path
+  // that legitimately needs the raw number, and it decrypts internally.
+  const masked = accounts.map((a) => ({
+    ...a,
+    accountNumber: maskAccountNumber(decrypt(a.accountNumber)),
+  }));
+
+  return { accounts: masked, meta: buildMeta(total, page, limit) };
 };
 
 // Order-independent, case-insensitive comparison — Paystack often resolves
@@ -70,7 +90,10 @@ export const verifyBankAccount = async (id: string) => {
   if (!account) throw AppError.notFound("Bank account");
   if (account.isVerified) throw AppError.badRequest("This bank account is already verified.");
 
-  const resolvedName = await resolveAccountName(account.accountNumber, account.bankCode);
+  const resolvedName = await resolveAccountName(
+    decrypt(account.accountNumber),
+    account.bankCode,
+  );
 
   if (!namesMatch(resolvedName, account.accountName)) {
     throw AppError.badRequest(

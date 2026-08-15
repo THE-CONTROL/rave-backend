@@ -14,5 +14,6 @@ router.get("/revenue", ctrl.getRevenueAnalytics);
 router.get("/vendors/top", ctrl.getTopVendors);
 router.get("/riders/top", ctrl.getTopRiders);
 router.get("/engagement", ctrl.getUserEngagement);
+router.get("/operations", ctrl.getOperationsSummary);
 
 export default router;

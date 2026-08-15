@@ -5,7 +5,7 @@ import { extractPagination } from "../../types";
 import { ok, asyncHandler } from "../../utils";
 
 export const listTransactions = asyncHandler(async (req: Request, res: Response) => {
-  const { type, status, userId, vendorId, riderId, from, to } = req.query;
+  const { type, status, userId, vendorId, riderId, from, to, search } = req.query;
   const { transactions, meta } = await transactionAdminService.listTransactions({
     ...extractPagination(req.query),
     type: type as any,
@@ -15,6 +15,7 @@ export const listTransactions = asyncHandler(async (req: Request, res: Response)
     riderId: riderId as string | undefined,
     from: from as string | undefined,
     to: to as string | undefined,
+    search: search as string | undefined,
   });
   ok(res, transactions, "Success", meta);
 });

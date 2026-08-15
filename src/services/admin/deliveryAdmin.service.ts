@@ -10,6 +10,7 @@ export interface ListDeliveriesQuery extends PaginationQuery {
   riderId?: string;
   from?: string;
   to?: string;
+  search?: string;
 }
 
 export const listDeliveries = async (query: ListDeliveriesQuery) => {
@@ -18,6 +19,12 @@ export const listDeliveries = async (query: ListDeliveriesQuery) => {
   const where = {
     ...(query.status && { status: query.status }),
     ...(query.riderId && { riderId: query.riderId }),
+    ...(query.search && {
+      OR: [
+        { order: { orderId: { contains: query.search, mode: "insensitive" as const } } },
+        { rider: { user: { fullName: { contains: query.search, mode: "insensitive" as const } } } },
+      ],
+    }),
     ...((query.from || query.to) && {
       createdAt: {
         ...(query.from && { gte: new Date(query.from) }),

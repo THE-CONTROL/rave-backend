@@ -2,6 +2,7 @@
 import { Router } from "express";
 import * as ctrl from "../../controllers/admin/userAdmin.controller";
 import { requireAdminRole } from "../../middleware/requireAdminRole";
+import { sensitiveActionLimiter } from "../../middleware/sensitiveActionLimiter";
 import { validate } from "../../middleware/validate";
 import { suspendUserSchema } from "../../validators";
 
@@ -12,8 +13,11 @@ router.use(requireAdminRole("super_admin", "support", "ops"));
 router.get("/", ctrl.listUsers);
 router.get("/:id", ctrl.getUserDetail);
 router.get("/:id/notifications", ctrl.listUserNotifications);
-router.post("/:id/suspend", validate(suspendUserSchema), ctrl.suspendUser);
-router.post("/:id/reactivate", ctrl.reactivateUser);
-router.delete("/:id", ctrl.softDeleteUser);
+router.get("/:id/search-history", ctrl.listUserSearchHistory);
+router.get("/:id/cart", ctrl.listUserCart);
+router.get("/:id/favorites", ctrl.listUserFavorites);
+router.post("/:id/suspend", sensitiveActionLimiter, validate(suspendUserSchema), ctrl.suspendUser);
+router.post("/:id/reactivate", sensitiveActionLimiter, ctrl.reactivateUser);
+router.delete("/:id", sensitiveActionLimiter, ctrl.softDeleteUser);
 
 export default router;

@@ -184,6 +184,7 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
 
+  @@index([userId])
   @@map("refresh_tokens")
 }
 
@@ -198,6 +199,7 @@ model OtpCode {
   attempts  Int      @default(0)
   createdAt DateTime @default(now())
 
+  @@index([userId, purpose, createdAt])
   @@map("otp_codes")
 }
 
@@ -422,6 +424,7 @@ model Order {
   transactions         Transaction[]
   refundRequests  RefundRequest[]
 
+  @@unique([evidenceUrl])
   @@index([userId, createdAt])
   @@index([vendorId, status])
   @@index([status])
@@ -497,6 +500,8 @@ model Transaction {
   updatedAt     DateTime          @updatedAt
 
 @@index([orderId])
+  @@index([vendorId, type, status])
+  @@index([riderId, type, status])
   @@map("transactions")
 }
 
@@ -663,6 +668,7 @@ model Notification {
   cancelWindow String?
   createdAt DateTime            @default(now())
 
+  @@index([userId, createdAt])
   @@map("notifications")
 }
 
@@ -1182,6 +1188,7 @@ model SearchHistory {
   query     String
   createdAt DateTime @default(now())
 
+  @@index([userId, createdAt])
   @@map("search_history")
 }
 

@@ -49,7 +49,16 @@ export const getPromotionDetail = async (id: string) => {
     include: { vendor: { select: { id: true, storeName: true } } },
   });
   if (!promotion) throw AppError.notFound("Promotion");
-  return promotion;
+
+  const products =
+    promotion.appliesTo === "specific" && promotion.productIds.length > 0
+      ? await prisma.menuItem.findMany({
+          where: { id: { in: promotion.productIds } },
+          select: { id: true, name: true, price: true },
+        })
+      : [];
+
+  return { ...promotion, products };
 };
 
 const _notifyVendorForPromotion = async (

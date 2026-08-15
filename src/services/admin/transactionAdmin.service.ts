@@ -13,6 +13,7 @@ export interface ListTransactionsQuery extends PaginationQuery {
   riderId?: string;
   from?: string;
   to?: string;
+  search?: string;
 }
 
 export const listTransactions = async (query: ListTransactionsQuery) => {
@@ -24,6 +25,12 @@ export const listTransactions = async (query: ListTransactionsQuery) => {
     ...(query.userId && { userId: query.userId }),
     ...(query.vendorId && { vendorId: query.vendorId }),
     ...(query.riderId && { riderId: query.riderId }),
+    ...(query.search && {
+      OR: [
+        { reference: { contains: query.search, mode: "insensitive" as const } },
+        { title: { contains: query.search, mode: "insensitive" as const } },
+      ],
+    }),
     ...((query.from || query.to) && {
       createdAt: {
         ...(query.from && { gte: new Date(query.from) }),
@@ -42,6 +49,7 @@ export const listTransactions = async (query: ListTransactionsQuery) => {
         user: { select: { id: true, fullName: true, email: true } },
         vendor: { select: { id: true, storeName: true } },
         rider: { select: { id: true, user: { select: { fullName: true } } } },
+        order: { select: { id: true, orderId: true } },
       },
     }),
     prisma.transaction.count({ where }),

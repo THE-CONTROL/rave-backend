@@ -1,6 +1,7 @@
 // src/services/payment.service.ts
 import axios from "axios";
 import { prisma } from "../config/database";
+import { config } from "../config";
 import { AppError } from "../utils/AppError";
 import { getCart } from "./user.service";
 import { cfg } from "./config.service";
@@ -10,8 +11,12 @@ import * as notif from "../events/notification.events";
 // configured client instead of creating their own Paystack axios instance.
 export const ps = axios.create({
   baseURL: "https://api.paystack.co",
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+  headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
 });
+
+// Built from config.appUrl (APP_URL env var) instead of a hardcoded dev
+// tunnel hostname — see src/config/index.ts.
+const PAYSTACK_CALLBACK_URL = `${config.appUrl.replace(/\/$/, "")}/api/${config.apiVersion}/payments/callback`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Initialize Checkout
@@ -71,8 +76,7 @@ export const initializeCheckout = async (
     amount: Math.round(Math.abs(amount) * 100),
     reference: initiatedTx.reference,
     metadata: { orderId, userId, type: `${type}_payment` },
-    callback_url:
-      "http://kz6eka6ebvyz61m64g34rtxv-180613240379:3000/api/v1/payments/callback",
+    callback_url: PAYSTACK_CALLBACK_URL,
   });
 
   return {

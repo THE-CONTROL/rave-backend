@@ -3,7 +3,13 @@ import { config } from "../config";
 import { logger } from "../config/logger";
 
 const RESEND_BASE_URL = "https://api.resend.com";
-const DEFAULT_FROM = "Sendpiper Alerts<no-reply@email.sendpiper.co>";
+// ⚠ PLACEHOLDER — "Sendpiper" was leftover boilerplate from an unrelated
+// product, not a real Rave sending identity. Sourced from config.email.from
+// (EMAIL_FROM env var, see src/config/index.ts) — set it to the real
+// "Display Name<address@yourdomain>" once the sending domain is set up
+// (SPF/DKIM records configured with Resend), otherwise this placeholder
+// domain will not deliver reliably.
+const DEFAULT_FROM = config.email.from;
 
 interface SendMailOptions {
   to: string;

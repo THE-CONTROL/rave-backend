@@ -24,7 +24,7 @@ const startServer = async () => {
 
     const server = app.listen(config.port, () => {
       logger.info(
-        `🚀 Rave API running in ${config.env} on http://172.22.32.1:${config.port}/api/${config.apiVersion}`,
+        `🚀 Rave API running in ${config.env} on port ${config.port} (/api/${config.apiVersion})`,
       );
     });
 

@@ -1,0 +1,18 @@
+-- CreateIndex (unique): evidenceUrl stores the Paystack payment reference an
+-- order was created from. It was a plain, unindexed String column, so
+-- createOrder's idempotency check (findFirst by evidenceUrl) was only a
+-- check-THEN-act — two concurrent create attempts for the same payment
+-- reference could both pass the check and both insert a row. This constraint
+-- makes the DB itself the source of truth: a second concurrent insert for the
+-- same reference now fails with a unique-violation (P2002) instead of
+-- silently creating a duplicate order, and application code
+-- (createOrder in src/services/user.service.ts) catches that violation and
+-- returns the existing order instead of a raw 500.
+--
+-- ⚠ BEFORE APPLYING IN AN ENVIRONMENT WITH EXISTING DATA: run
+--     SELECT "evidenceUrl", COUNT(*) FROM "orders" GROUP BY "evidenceUrl" HAVING COUNT(*) > 1;
+--   first. If this returns any rows, this migration will fail to apply until
+--   those duplicate orders are manually reconciled (refunded/merged) and all
+--   but one row per reference is either deleted or has its evidenceUrl
+--   changed to a unique placeholder.
+CREATE UNIQUE INDEX "orders_evidenceUrl_key" ON "orders"("evidenceUrl");

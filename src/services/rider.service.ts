@@ -2,6 +2,7 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
+import { logger } from "../config/logger";
 import {
   buildMeta,
   maskAccountNumber,
@@ -17,11 +18,13 @@ import * as notif from "../events/notification.events";
 import { applyReferralReward } from "./user.service";
 import { sendOtpEmail } from "@/utils/email";
 import axios from "axios";
-import { DeliveryStatus } from "@prisma/client";
+import { DeliveryStatus, Prisma } from "@prisma/client";
+import { config } from "../config";
+import { encryptSearchable, decrypt } from "../utils/crypto";
 
 const ps = axios.create({
   baseURL: "https://api.paystack.co",
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+  headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,7 +260,9 @@ export const getRiderOnboardingState = async (userId: string) => {
     bank: bank
       ? {
           bank: bank.bankName,
-          accountNumber: bank.accountNumber,
+          // Masked — never send the decrypted account number back to a
+          // client.
+          accountNumber: maskAccountNumber(decrypt(bank.accountNumber)),
           name: bank.accountName,
           // Without this, re-opening the Bank step during onboarding review
           // always started from a blank bankCode (the account name still
@@ -337,6 +342,9 @@ export const saveRiderOnboardingStep = async (
   else if (step === 4) {
     // Note: data is { bank: { bank, accountNumber, name, bankCode } }
     const bankInfo = data.bank;
+    // Deterministic encryption (encryptSearchable) — see saveBankAccount /
+    // vendor.service.ts's identical rationale.
+    const encryptedAccountNo = encryptSearchable(bankInfo.accountNumber);
 
     await prisma.bankAccount.upsert({
       where: {
@@ -347,14 +355,14 @@ export const saveRiderOnboardingStep = async (
         riderId: rider.id,
         bankName: bankInfo.bank,
         accountName: bankInfo.name,
-        accountNumber: bankInfo.accountNumber,
+        accountNumber: encryptedAccountNo,
         isPrimary: true,
         bankCode: bankInfo.bankCode,
       },
       update: {
         bankName: bankInfo.bank,
         accountName: bankInfo.name,
-        accountNumber: bankInfo.accountNumber,
+        accountNumber: encryptedAccountNo,
         bankCode: bankInfo.bankCode,
       },
     });
@@ -680,27 +688,6 @@ export const acceptOrder = async (
   const vendorOtp = genOtp(); // To be verified at Pickup
   const customerOtp = genOtp(); // To be verified at Delivery
 
-  // 6. Send OTPs via Email
-  // To Customer
-  if (order.user.email) {
-    await sendOtpEmail(
-      order.user.email,
-      order.user.fullName,
-      customerOtp,
-      "order-delivery-code",
-    );
-  }
-
-  // To Vendor (Using vendor.user.email)
-  if (order.vendor.user.email) {
-    await sendOtpEmail(
-      order.vendor.user.email,
-      order.vendor.user.fullName,
-      vendorOtp,
-      "vendor-pickup-code",
-    );
-  }
-
   // 7. Atomic Transaction: Create Delivery & Update Order
   await prisma.$transaction([
     prisma.delivery.create({
@@ -728,6 +715,43 @@ export const acceptOrder = async (
       },
     }),
   ]);
+
+  // 6. Send OTPs via Email — fire-and-forget, and only AFTER the delivery
+  // transaction above has actually committed. Two reasons:
+  //  - Matches the fire-and-forget pattern already used elsewhere in this
+  //    diff (see auth.service.ts) so a slow/down email provider can't block
+  //    the accept-order hot path.
+  //  - Sending only after the transaction succeeds means a rider who loses a
+  //    concurrent-accept race (another rider's delivery.create wins first)
+  //    never gets an OTP email fired for a delivery that was never created
+  //    for them.
+  if (order.user.email) {
+    sendOtpEmail(
+      order.user.email,
+      order.user.fullName,
+      customerOtp,
+      "order-delivery-code",
+    ).catch((err) =>
+      logger.error("Order-delivery-code OTP email failed", {
+        err,
+        orderId,
+      }),
+    );
+  }
+
+  if (order.vendor.user.email) {
+    sendOtpEmail(
+      order.vendor.user.email,
+      order.vendor.user.fullName,
+      vendorOtp,
+      "vendor-pickup-code",
+    ).catch((err) =>
+      logger.error("Vendor-pickup-code OTP email failed", {
+        err,
+        orderId,
+      }),
+    );
+  }
 
   // 8. Notifications
   try {
@@ -1256,7 +1280,7 @@ const _disburseRiderEarnings = async (
       const recipientRes = await ps.post("/transferrecipient", {
         type: "nuban",
         name: bankAccount.accountName,
-        account_number: bankAccount.accountNumber,
+        account_number: decrypt(bankAccount.accountNumber),
         bank_code: bankAccount.bankCode,
         currency: "NGN",
       });
@@ -1893,10 +1917,12 @@ export const getBankAccounts = async (userId: string) => {
     where: { riderId: rider.id },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
   });
-  return accounts.map((a) => ({
-    ...a,
-    maskedNumber: maskAccountNumber(a.accountNumber),
-  }));
+  // Never send the decrypted account number to a client — only the masked
+  // form. See vendor.service.ts's getVendorBankAccounts for the same pattern.
+  return accounts.map((a) => {
+    const masked = maskAccountNumber(decrypt(a.accountNumber));
+    return { ...a, accountNumber: masked, maskedNumber: masked };
+  });
 };
 
 const MAX_BANK_ACCOUNTS_PER_RIDER = 3;
@@ -1921,10 +1947,14 @@ export const saveBankAccount = async (
     );
   }
 
+  // Deterministic encryption (encryptSearchable) — see
+  // vendor.service.ts#saveVendorBankAccount for the rationale.
+  const encryptedAccountNo = encryptSearchable(data.accountNumber);
+
   const duplicate = await prisma.bankAccount.findFirst({
     where: {
       riderId: rider.id,
-      accountNumber: data.accountNumber,
+      accountNumber: encryptedAccountNo,
       bankCode: data.bankCode,
     },
   });
@@ -1933,7 +1963,12 @@ export const saveBankAccount = async (
   }
 
   await prisma.bankAccount.create({
-    data: { riderId: rider.id, isPrimary: count === 0, ...data },
+    data: {
+      riderId: rider.id,
+      isPrimary: count === 0,
+      ...data,
+      accountNumber: encryptedAccountNo,
+    },
   });
 };
 
@@ -1954,8 +1989,13 @@ export const updateBankAccount = async (
   if (!account) throw AppError.notFound("Bank account");
 
   await prisma.bankAccount.update({
-    where: { id: bankId },
-    data,
+    where: { id: bankId, riderId: rider.id },
+    data: {
+      ...data,
+      ...(data.accountNumber !== undefined
+        ? { accountNumber: encryptSearchable(data.accountNumber) }
+        : {}),
+    },
   });
 };
 
@@ -1964,13 +2004,20 @@ export const setPrimaryBank = async (
   bankId: string,
 ): Promise<void> => {
   const rider = await _requireRider(userId);
+  const account = await prisma.bankAccount.findFirst({
+    where: { id: bankId, riderId: rider.id },
+  });
+  if (!account) throw AppError.notFound("Bank account");
+
   await prisma.$transaction([
     prisma.bankAccount.updateMany({
       where: { riderId: rider.id },
       data: { isPrimary: false },
     }),
+    // Scoped to riderId as well — not just id — so a crafted bankId
+    // belonging to another rider can never be flipped to primary here.
     prisma.bankAccount.update({
-      where: { id: bankId },
+      where: { id: bankId, riderId: rider.id },
       data: { isPrimary: true },
     }),
   ]);
@@ -2047,29 +2094,66 @@ export const withdrawRiderFunds = async (
   });
   if (!bankAccount) throw AppError.notFound("Bank account");
 
-  const { availableBalance } = await getRiderBalance(userId);
-  if (amount > availableBalance) {
-    throw AppError.badRequest("Amount exceeds your available balance.");
-  }
+  // Atomically select AND claim the "initiated" rows to settle inside a
+  // single Serializable transaction. Without this, two concurrent withdraw
+  // requests could both read the same pending rows (findMany), both decide
+  // they cover the requested amount, and both go on to trigger a real
+  // Paystack transfer for the same underlying earnings — a genuine double
+  // payout, not just a bad balance read. Claiming them here (flipping status
+  // away from "initiated" before either request calls Paystack) means the
+  // second transaction either sees no matching rows left to claim or is
+  // aborted outright by the DB's serializable conflict detection.
+  //
+  // The claim optimistically marks the rows "completed" before the transfer
+  // actually happens (there's no intermediate "processing" status in the
+  // TransactionStatus enum). If the transfer fails after exhausting retries,
+  // the rows are flipped to "failed" (never left silently claimed) — mirrors
+  // withdrawVendorFunds's failure handling. The reference/transferCode is
+  // attached in a follow-up update once the real transfer succeeds.
+  const { toSettle, settleAmount } = await prisma.$transaction(
+    async (txClient) => {
+      const pending = await txClient.transaction.findMany({
+        where: { riderId: rider.id, type: "payment", status: "initiated" },
+        orderBy: { createdAt: "asc" },
+      });
 
-  const pending = await prisma.transaction.findMany({
-    where: { riderId: rider.id, type: "payment", status: "initiated" },
-    orderBy: { createdAt: "asc" },
-  });
+      let remaining = amount;
+      const selected: typeof pending = [];
+      for (const t of pending) {
+        if (remaining <= 0) break;
+        selected.push(t);
+        remaining -= t.amount;
+      }
 
-  let remaining = amount;
-  const toSettle: typeof pending = [];
-  for (const tx of pending) {
-    if (remaining <= 0) break;
-    toSettle.push(tx);
-    remaining -= tx.amount;
-  }
+      if (selected.length === 0) {
+        throw AppError.badRequest("No pending earnings to withdraw.");
+      }
 
-  if (toSettle.length === 0) {
-    throw AppError.badRequest("No pending earnings to withdraw.");
-  }
+      const totalSelected = selected.reduce((s, t) => s + t.amount, 0);
+      if (amount > totalSelected) {
+        throw AppError.badRequest("Amount exceeds your available balance.");
+      }
 
-  const settleAmount = toSettle.reduce((s, t) => s + t.amount, 0);
+      const claim = await txClient.transaction.updateMany({
+        where: {
+          id: { in: selected.map((t) => t.id) },
+          status: "initiated",
+        },
+        data: { status: "completed" },
+      });
+
+      // Under Serializable isolation this should always match — a mismatch
+      // means another transaction claimed some of these rows concurrently.
+      if (claim.count !== selected.length) {
+        throw AppError.badRequest(
+          "Some of your pending earnings were already withdrawn. Please try again.",
+        );
+      }
+
+      return { toSettle: selected, settleAmount: totalSelected };
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 
   let lastError = "Paystack transfer error";
   for (
@@ -2081,7 +2165,7 @@ export const withdrawRiderFunds = async (
       const recipientRes = await ps.post("/transferrecipient", {
         type: "nuban",
         name: bankAccount.accountName,
-        account_number: bankAccount.accountNumber,
+        account_number: decrypt(bankAccount.accountNumber),
         bank_code: bankAccount.bankCode,
         currency: "NGN",
       });
@@ -2095,6 +2179,8 @@ export const withdrawRiderFunds = async (
       });
       const transferCode = transferRes.data.data.transfer_code;
 
+      // Rows were already flipped to "completed" by the claim step above —
+      // this just attaches the real transfer reference now that it exists.
       await prisma.transaction.updateMany({
         where: { id: { in: toSettle.map((t) => t.id) } },
         data: { status: "completed", reference: transferCode },
@@ -2114,6 +2200,15 @@ export const withdrawRiderFunds = async (
         "Paystack transfer error";
 
       if (attempt === RIDER_WITHDRAW_RETRY_DELAYS_MS.length) {
+        // The claim step already flipped these rows to "completed" — since
+        // the transfer never actually succeeded, that must be corrected to
+        // "failed" so the rider isn't shown a payout that never landed and
+        // so the row is flagged for manual investigation (mirrors
+        // withdrawVendorFunds's failure handling).
+        await prisma.transaction.updateMany({
+          where: { id: { in: toSettle.map((t) => t.id) } },
+          data: { status: "failed", reason: lastError },
+        });
         await notif.notifyRiderWithdrawalFailed(userId, settleAmount, lastError);
         throw AppError.badRequest(
           `Withdrawal could not be completed: ${lastError}. Please try again shortly.`,

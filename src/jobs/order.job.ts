@@ -34,14 +34,26 @@ export const cleanupStaleOrders = async (): Promise<void> => {
   if (!staleOrders.length) return;
 
   for (const order of staleOrders) {
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: order.id },
+    // Guard the update with `status: "new"` and check the affected row count
+    // instead of an unconditional update: this job runs on a setInterval with
+    // no distributed lock, so two overlapping instances (or a slow run
+    // overlapping the next tick) could otherwise both load the same stale
+    // order, both flip it to "cancelled", and both create a RefundRequest —
+    // a real double-refund. The conditional update means only the run that
+    // actually transitions the row (count === 1) goes on to create the
+    // refund; a run that finds the order already moved on (count === 0)
+    // skips it entirely.
+    const claimed = await prisma.$transaction(async (tx) => {
+      const claim = await tx.order.updateMany({
+        where: { id: order.id, status: "new" },
         data: {
           status: "cancelled",
           cancelledBy: "store",
         },
       });
+      if (claim.count === 0) {
+        return false;
+      }
 
       // The vendor never responded in time — the customer already paid, so
       // this needs a real, reviewable RefundRequest instead of the old fake
@@ -62,7 +74,16 @@ export const cleanupStaleOrders = async (): Promise<void> => {
           },
         },
       });
+
+      return true;
     });
+
+    if (!claimed) {
+      logger.info(
+        `[job:staleOrders] Skipped order ${order.orderId} — already left "new" status (claimed by another run or the vendor/customer).`,
+      );
+      continue;
+    }
 
     await notifyOrderCancelled(order.userId, order.id, "store");
     await notifyAdminsNewRefundRequest(order.totalAmount);

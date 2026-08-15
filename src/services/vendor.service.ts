@@ -1,7 +1,9 @@
 // src/services/vendor.service.ts
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/database";
 import { AppError } from "../utils/AppError";
+import { encryptSearchable, decrypt } from "../utils/crypto";
 import {
   buildMeta,
   maskAccountNumber,
@@ -1310,7 +1312,10 @@ export const getVendorOnboardingState = async (userId: string) => {
     bank: bank
       ? {
           bank: bank.bankName,
-          accountNumber: bank.accountNumber,
+          // Masked — never send the decrypted account number back to a
+          // client. The onboarding resume screen only needs to show that a
+          // bank is on file, not the full number.
+          accountNumber: maskAccountNumber(decrypt(bank.accountNumber)),
           name: bank.accountName,
           bankCode: bank.bankCode,
         }
@@ -1391,25 +1396,30 @@ export const saveVendorOnboardingStep = async (
       (field) => field && String(field).trim().length > 0,
     );
     if (isValid) {
+      // Deterministic encryption (encryptSearchable) — same plaintext always
+      // maps to the same ciphertext, so this compound-unique lookup and the
+      // @@unique([vendorId, accountNumber]) DB constraint keep working
+      // exactly as before, without a schema change or a second lookup column.
+      const encryptedAccountNo = encryptSearchable(accountNo);
       await prisma.bankAccount.upsert({
         where: {
           vendorId_accountNumber: {
             vendorId: vendor.id,
-            accountNumber: accountNo,
+            accountNumber: encryptedAccountNo,
           },
         },
         create: {
           vendorId: vendor.id,
           bankName: bank,
           accountName: name,
-          accountNumber: accountNo,
+          accountNumber: encryptedAccountNo,
           bankCode,
           isPrimary: true,
         },
         update: {
           bankName: bank,
           accountName: name,
-          accountNumber: accountNo, // Fixed logic flaw here
+          accountNumber: encryptedAccountNo, // Fixed logic flaw here
           bankCode,
         },
       });
@@ -1464,10 +1474,14 @@ export const getVendorBankAccounts = async (userId: string) => {
     where: { vendorId: vendor.id },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
   });
-  return accounts.map((a) => ({
-    ...a,
-    maskedNumber: maskAccountNumber(a.accountNumber),
-  }));
+  // Never send the decrypted account number to a client — only the masked
+  // form. `accountNumber` on the returned object is intentionally overwritten
+  // with the same masked value (rather than the raw ciphertext) so a caller
+  // spreading this response can't accidentally leak the encrypted payload.
+  return accounts.map((a) => {
+    const masked = maskAccountNumber(decrypt(a.accountNumber));
+    return { ...a, accountNumber: masked, maskedNumber: masked };
+  });
 };
 
 const MAX_BANK_ACCOUNTS_PER_ROLE = 3;
@@ -1493,10 +1507,15 @@ export const saveVendorBankAccount = async (
     );
   }
 
+  // Deterministic encryption (encryptSearchable) so this equality lookup and
+  // the @@unique([vendorId, accountNumber]) constraint keep working exactly
+  // as before encryption was introduced.
+  const encryptedAccountNo = encryptSearchable(data.accountNumber);
+
   const duplicate = await prisma.bankAccount.findFirst({
     where: {
       vendorId: vendor.id,
-      accountNumber: data.accountNumber,
+      accountNumber: encryptedAccountNo,
       bankCode: data.bankCode,
     },
   });
@@ -1510,7 +1529,7 @@ export const saveVendorBankAccount = async (
       isPrimary: count === 0,
       bankName: data.bank, // Corrected field name
       accountName: data.name, // Corrected field name
-      accountNumber: data.accountNumber,
+      accountNumber: encryptedAccountNo,
       bankCode: data.bankCode,
     },
   });
@@ -1521,13 +1540,20 @@ export const setVendorPrimaryBank = async (
   bankId: string,
 ): Promise<void> => {
   const vendor = await _requireVendor(userId);
+  const account = await prisma.bankAccount.findFirst({
+    where: { id: bankId, vendorId: vendor.id },
+  });
+  if (!account) throw AppError.notFound("Bank account");
+
   await prisma.$transaction([
     prisma.bankAccount.updateMany({
       where: { vendorId: vendor.id },
       data: { isPrimary: false },
     }),
+    // Scoped to vendorId as well — not just id — so a crafted bankId
+    // belonging to another vendor can never be flipped to primary here.
     prisma.bankAccount.update({
-      where: { id: bankId },
+      where: { id: bankId, vendorId: vendor.id },
       data: { isPrimary: true },
     }),
   ]);
@@ -1692,30 +1718,37 @@ export const deletePromotion = async (
 
 export const getVendorRatingStats = async (userId: string) => {
   const vendor = await _requireVendor(userId);
-  const reviews = await prisma.review.findMany({
-    where: { vendorId: vendor.id },
-    select: { restaurantRating: true, foodRating: true },
-    // riderRating intentionally excluded — that's the rider's stat, not the
-    // vendor's. Folding it in penalises vendors for rider behaviour they
-    // don't control. See submitReview for the matching formula.
-  });
 
-  if (!reviews.length) {
+  // averageRating/totalReviews are already maintained as cached aggregates on
+  // VendorProfile (see user.service.ts#submitReview, which recomputes them
+  // with this exact (restaurantRating + foodRating) / 2 formula on every new
+  // review) — the same pattern catalog.service.ts reads from directly. No
+  // need to load every review row just to recompute numbers that are already
+  // sitting on the vendor's own profile.
+  if (vendor.totalReviews === 0) {
     return { averageRating: 0, totalReviews: 0, distribution: {} };
   }
 
-  const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  let total = 0;
+  // Only the star-count distribution actually requires per-review data (it
+  // isn't cached anywhere) — computed as a GROUP BY in the database instead
+  // of pulling every review row into app memory just to bucket it here.
+  // riderRating intentionally excluded from the bucketed score — that's the
+  // rider's stat, not the vendor's. See submitReview for the matching formula.
+  const buckets = await prisma.$queryRaw<Array<{ bucket: number; count: bigint }>>`
+    SELECT ROUND(("restaurantRating" + "foodRating") / 2.0)::int AS bucket, count(*) AS count
+    FROM "reviews"
+    WHERE "vendorId" = ${vendor.id}
+    GROUP BY bucket
+  `;
 
-  for (const r of reviews) {
-    const avg = (r.restaurantRating + r.foodRating) / 2;
-    distribution[Math.round(avg)] = (distribution[Math.round(avg)] ?? 0) + 1;
-    total += avg; // sum un-rounded values; round only the final number
+  const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (const b of buckets) {
+    distribution[b.bucket] = Number(b.count);
   }
 
   return {
-    averageRating: parseFloat((total / reviews.length).toFixed(1)),
-    totalReviews: reviews.length,
+    averageRating: vendor.averageRating,
+    totalReviews: vendor.totalReviews,
     distribution,
   };
 };
@@ -2044,7 +2077,8 @@ export const getVendorBankAccountById = async (
     where: { id: bankId, vendorId: vendor.id },
   });
   if (!account) throw AppError.notFound("Bank account");
-  return { ...account, maskedNumber: maskAccountNumber(account.accountNumber) };
+  const masked = maskAccountNumber(decrypt(account.accountNumber));
+  return { ...account, accountNumber: masked, maskedNumber: masked };
 };
 
 export const updateVendorBankAccount = async (
@@ -2068,7 +2102,16 @@ export const updateVendorBankAccount = async (
   // column names directly — see vendorUpdateBankSchema — so this can pass
   // the fields straight through instead of forwarding {bank, name} into a
   // Prisma model that has no such columns (which is what crashed before).
-  await prisma.bankAccount.update({ where: { id: bankId }, data });
+  await prisma.bankAccount.update({
+    where: { id: bankId, vendorId: vendor.id },
+    data: {
+      ...data,
+      // Deterministic encryption (encryptSearchable) — see saveVendorBankAccount.
+      ...(data.accountNumber !== undefined
+        ? { accountNumber: encryptSearchable(data.accountNumber) }
+        : {}),
+    },
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2092,15 +2135,23 @@ export const updateVendorBankAccount = async (
  * screen. Payouts (withdrawals) are ledgered as type "payment" against the
  * vendor, mirroring the rider payout convention in rider.service.ts.
  */
-export const getVendorBalance = async (userId: string) => {
-  const vendor = await _requireVendor(userId);
+// Prisma client or an in-flight $transaction callback client — lets the core
+// balance computation below be reused both for a plain read (getVendorBalance)
+// and re-checked atomically inside a Serializable transaction
+// (withdrawVendorFunds), so both paths compute the exact same numbers off the
+// exact same query shape.
+type PrismaClientOrTx = typeof prisma | Prisma.TransactionClient;
 
+const _computeVendorAvailableBalance = async (
+  client: PrismaClientOrTx,
+  vendorId: string,
+) => {
   const [newEarningsAgg, legacyEarningsAgg, paidOutAgg, pendingAgg, commission] =
     await Promise.all([
       // New-style rows: real subtotal/fee were persisted at creation.
-      prisma.transaction.aggregate({
+      client.transaction.aggregate({
         where: {
-          vendorId: vendor.id,
+          vendorId,
           type: "order",
           status: "completed",
           subtotal: { not: null },
@@ -2109,9 +2160,9 @@ export const getVendorBalance = async (userId: string) => {
       }),
       // Legacy rows: subtotal/fee were never populated — fall back to amount
       // (see comment above / getVendorTransactionById's identical fallback).
-      prisma.transaction.aggregate({
+      client.transaction.aggregate({
         where: {
-          vendorId: vendor.id,
+          vendorId,
           type: "order",
           status: "completed",
           subtotal: null,
@@ -2119,14 +2170,14 @@ export const getVendorBalance = async (userId: string) => {
         _sum: { amount: true },
       }),
       // Completed payouts already sent to the vendor's bank via Paystack.
-      prisma.transaction.aggregate({
-        where: { vendorId: vendor.id, type: "payment", status: "completed" },
+      client.transaction.aggregate({
+        where: { vendorId, type: "payment", status: "completed" },
         _sum: { amount: true },
       }),
       // Payouts currently in flight — earmarked so a second withdraw request
       // can't double-spend the same balance while the first is processing.
-      prisma.transaction.aggregate({
-        where: { vendorId: vendor.id, type: "payment", status: "initiated" },
+      client.transaction.aggregate({
+        where: { vendorId, type: "payment", status: "initiated" },
         _sum: { amount: true },
       }),
       cfg.fees.vendorCommission(),
@@ -2144,6 +2195,21 @@ export const getVendorBalance = async (userId: string) => {
     0,
     totalEarned - totalWithdrawn - pendingBalance,
   );
+
+  return {
+    totalEarned,
+    totalWithdrawn,
+    pendingBalance,
+    availableBalance,
+    commissionRate: commission,
+  };
+};
+
+export const getVendorBalance = async (userId: string) => {
+  const vendor = await _requireVendor(userId);
+
+  const { totalEarned, totalWithdrawn, pendingBalance, availableBalance, commissionRate } =
+    await _computeVendorAvailableBalance(prisma, vendor.id);
 
   // A handful of recent transactions for the earnings screen's context —
   // mirrors the shape getVendorTransactions already formats.
@@ -2175,7 +2241,7 @@ export const getVendorBalance = async (userId: string) => {
     totalWithdrawn,
     pendingBalance,
     availableBalance,
-    commissionRate: commission,
+    commissionRate,
     recentTransactions,
   };
 };
@@ -2207,24 +2273,43 @@ export const withdrawVendorFunds = async (
   });
   if (!bankAccount) throw AppError.notFound("Bank account");
 
-  const { availableBalance } = await getVendorBalance(userId);
-  if (amount > availableBalance) {
-    throw AppError.badRequest("Amount exceeds your available balance.");
-  }
+  // Atomically re-check the balance and claim the withdrawal row inside a
+  // single Serializable transaction. Without this, two concurrent withdraw
+  // requests could both read the same pre-withdrawal balance, both pass the
+  // `amount > availableBalance` check, and both create an "initiated" payout
+  // row — a double-spend. Serializable isolation guarantees the DB itself
+  // will abort one of two concurrent transactions that would otherwise
+  // interleave unsafely, and re-running the balance computation *inside* the
+  // transaction (instead of trusting the pre-transaction read above) means
+  // the second transaction to actually run sees the first one's earmarked
+  // "initiated" row and correctly fails the balance check.
+  const tx = await prisma.$transaction(
+    async (txClient) => {
+      const { availableBalance } = await _computeVendorAvailableBalance(
+        txClient,
+        vendor.id,
+      );
+      if (amount > availableBalance) {
+        throw AppError.badRequest("Amount exceeds your available balance.");
+      }
 
-  // Ledger row created up front, "initiated" — this is what getVendorBalance
-  // earmarks against so a second concurrent withdraw can't also spend this
-  // same balance while the transfer below is still in flight.
-  const tx = await prisma.transaction.create({
-    data: {
-      vendorId: vendor.id,
-      type: "payment",
-      status: "initiated",
-      title: "Vendor Payout",
-      amount,
-      paymentMethod: "bank_transfer",
+      // Ledger row created up front, "initiated" — this is what
+      // _computeVendorAvailableBalance earmarks against so a second
+      // concurrent withdraw can't also spend this same balance while the
+      // transfer below is still in flight.
+      return txClient.transaction.create({
+        data: {
+          vendorId: vendor.id,
+          type: "payment",
+          status: "initiated",
+          title: "Vendor Payout",
+          amount,
+          paymentMethod: "bank_transfer",
+        },
+      });
     },
-  });
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 
   // Same retry/backoff structure as _disburseRiderEarnings: three attempts at
   // 1s / 3s / 7s. If all three fail, the row is marked "failed" (rather than
@@ -2237,7 +2322,7 @@ export const withdrawVendorFunds = async (
       const recipientRes = await ps.post("/transferrecipient", {
         type: "nuban",
         name: bankAccount.accountName,
-        account_number: bankAccount.accountNumber,
+        account_number: decrypt(bankAccount.accountNumber),
         bank_code: bankAccount.bankCode,
         currency: "NGN",
       });

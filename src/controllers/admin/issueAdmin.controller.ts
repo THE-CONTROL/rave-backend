@@ -11,13 +11,14 @@ const auditCtx = (req: Request) => ({
 });
 
 export const listIssues = asyncHandler(async (req: Request, res: Response) => {
-  const { status, role, category, userId } = req.query;
+  const { status, role, category, userId, search } = req.query;
   const { issues, meta } = await issueAdminService.listIssues({
     ...extractPagination(req.query),
     status: status as any,
     role: role as any,
     category: category as string | undefined,
     userId: userId as string | undefined,
+    search: search as string | undefined,
   });
   ok(res, issues, "Success", meta);
 });

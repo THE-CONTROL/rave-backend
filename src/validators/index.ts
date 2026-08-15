@@ -15,6 +15,8 @@ export const signUpSchema = z.object({
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Za-z]/, "Password must contain at least one letter")
+    .regex(/[0-9]/, "Password must contain at least one digit")
     .regex(
       /[!@#$%^&*(),.?":{}|<>]/,
       "Password must contain at least one special character",
@@ -51,6 +53,8 @@ export const resetPasswordSchema = z
     password: z
       .string()
       .min(8, "Password must be at least 8 characters")
+      .regex(/[A-Za-z]/, "Password must contain at least one letter")
+      .regex(/[0-9]/, "Password must contain at least one digit")
       .regex(
         /[!@#$%^&*(),.?":{}|<>]/,
         "Password must contain at least one special character",
@@ -137,6 +141,12 @@ export const addToCartSchema = z.object({
 export const updateCartItemSchema = z.object({
   qty: z.number().int().min(0).max(20),
   extras: cartExtrasSchema.optional(),
+});
+
+export const cartPromoSchema = z.object({
+  code: z.string().min(1, "Promo code is required"),
+  vendorId: z.string().uuid(),
+  subtotal: z.number().nonnegative(),
 });
 
 export const initializePaymentSchema = z.object({

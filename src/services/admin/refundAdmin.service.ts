@@ -10,6 +10,7 @@ export interface ListRefundsQuery extends PaginationQuery {
   status?: RefundStatus;
   vendorId?: string;
   userId?: string;
+  search?: string;
 }
 
 // No vendor-ownership filter — that's the entire point of oversight.
@@ -20,6 +21,12 @@ export const listAllRefunds = async (query: ListRefundsQuery) => {
     ...(query.status && { status: query.status }),
     ...(query.vendorId && { order: { vendorId: query.vendorId } }),
     ...(query.userId && { userId: query.userId }),
+    ...(query.search && {
+      OR: [
+        { referenceId: { contains: query.search, mode: "insensitive" as const } },
+        { order: { orderId: { contains: query.search, mode: "insensitive" as const } } },
+      ],
+    }),
   };
 
   const [refunds, total] = await Promise.all([

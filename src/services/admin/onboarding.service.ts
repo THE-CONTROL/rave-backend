@@ -2,10 +2,14 @@
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
 
+// Deliberately un-paginated: the onboarding-slides admin page has drag-and-
+// drop reordering that needs the complete ordered set. `take` here is only a
+// safety cap against runaway data entry, not real pagination.
 export const listSlides = (role?: string) =>
   prisma.onboardingSlide.findMany({
     where: role ? { role } : undefined,
     orderBy: [{ role: "asc" }, { order: "asc" }],
+    take: 200,
   });
 
 export const getSlideById = async (id: string) => {

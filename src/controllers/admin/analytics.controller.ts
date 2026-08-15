@@ -44,3 +44,7 @@ export const getTopRiders = asyncHandler(async (req: Request, res: Response) => 
 export const getUserEngagement = asyncHandler(async (req: Request, res: Response) => {
   ok(res, await analyticsService.getUserEngagement(req.query.range as string | undefined));
 });
+
+export const getOperationsSummary = asyncHandler(async (req: Request, res: Response) => {
+  ok(res, await analyticsService.getOperationsSummary(req.query.range as string | undefined));
+});

@@ -53,15 +53,11 @@ app.use(
   }),
 );
 
-// Stricter limiter for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: {
-    success: false,
-    message: "Too many auth attempts. Please try again in 15 minutes.",
-  },
-});
+// A materially stricter, per-route limiter for the credential-guessing-prone
+// auth endpoints (signin, verify-email, resend-code, forgot-password,
+// reset-password) is applied directly in src/routes/auth.routes.ts — max: 200
+// here was no stricter than the global limiter above and did nothing to slow
+// down a brute-force/OTP-guessing attempt.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Body parsing & compression
@@ -96,7 +92,6 @@ app.use(
 // Routes
 // ─────────────────────────────────────────────────────────────────────────────
 
-app.use(`/api/${config.apiVersion}/auth`, authLimiter);
 app.use(`/api/${config.apiVersion}`, routes);
 
 // ─────────────────────────────────────────────────────────────────────────────

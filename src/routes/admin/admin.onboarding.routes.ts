@@ -1,6 +1,7 @@
 // src/routes/admin/admin.onboarding.routes.ts
 import { Router } from "express";
 import * as ctrl from "../../controllers/admin/onboarding.controller";
+import { requireAdminRole } from "../../middleware/requireAdminRole";
 import { validate } from "../../middleware/validate";
 import {
   createOnboardingSlideSchema,
@@ -9,6 +10,8 @@ import {
 } from "../../validators";
 
 const router = Router();
+
+router.use(requireAdminRole("super_admin", "content"));
 
 router.get("/", ctrl.listSlides);
 router.post("/", validate(createOnboardingSlideSchema), ctrl.createSlide);

@@ -8,6 +8,8 @@ import { issueTokenPair, verifyRefreshToken } from "../utils/jwt";
 import { sendOtpEmail, sendWelcomeEmail } from "../utils/email";
 import { cfg } from "./config.service";
 import { seedVendorBadges } from "./badgeEvaluation.service";
+import { sha256Hex } from "../utils/crypto";
+import { logger } from "../config/logger";
 import {
   SignUpDto,
   SignInDto,
@@ -19,6 +21,32 @@ import {
 } from "../types";
 
 const SALT_ROUNDS = 12;
+
+// Per-email/purpose OTP resend cooldown — independent of the IP-based rate
+// limiter (app.ts/auth.routes.ts), which only throttles by IP and does
+// nothing to stop someone spamming a single victim's inbox with OTP emails
+// from many IPs/devices.
+const OTP_RESEND_COOLDOWN_SECS = 60;
+
+const _enforceOtpResendCooldown = async (
+  userId: string,
+  purpose: string,
+): Promise<void> => {
+  const lastOtp = await prisma.otpCode.findFirst({
+    where: { userId, purpose },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (!lastOtp) return;
+
+  const secsSinceLast = (Date.now() - lastOtp.createdAt.getTime()) / 1000;
+  if (secsSinceLast < OTP_RESEND_COOLDOWN_SECS) {
+    const waitSecs = Math.ceil(OTP_RESEND_COOLDOWN_SECS - secsSinceLast);
+    throw AppError.badRequest(
+      `Please wait ${waitSecs}s before requesting another code.`,
+    );
+  }
+};
 
 // A valid bcrypt hash of an unguessable, never-used password. Compared against
 // on every failed-lookup sign-in attempt so that "no such user" and "wrong
@@ -110,7 +138,7 @@ export const signUp = async (dto: SignUpDto): Promise<void> => {
 
   // Fix: fire-and-forget — DB succeeded, don't crash the signup over email
   sendOtpEmail(user.email, user.fullName, otp, "verify-account").catch(
-    (err) => {},
+    (err) => logger.error("Signup verify-account OTP email failed", { err, userId: user.id }),
   );
 };
 
@@ -175,7 +203,7 @@ export const verifyEmail = async (
 
     // Welcome email is fire-and-forget — no reason to make the client wait
     sendWelcomeEmail(otpRecord.user.email, otpRecord.user.fullName).catch(
-      (err) => {},
+      (err) => logger.error("Welcome email failed", { err, userId: otpRecord.user.id }),
     );
 
     return { purpose: "verify-account", tokens, role: otpRecord.user.role };
@@ -258,8 +286,10 @@ export const refreshTokens = async (
 ): Promise<TokenPair> => {
   const payload = verifyRefreshToken(refreshToken);
 
+  // RefreshToken.token stores a SHA-256 hash of the real token, not the raw
+  // value — look it up by the same hash (see _createSession below).
   const stored = await prisma.refreshToken.findUnique({
-    where: { token: refreshToken },
+    where: { token: sha256Hex(refreshToken) },
   });
 
   if (!stored || stored.expiresAt < new Date()) {
@@ -286,6 +316,8 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
+  await _enforceOtpResendCooldown(user.id, dto.purpose);
+
   const otp = generateOtp(await cfg.otp.length());
   await prisma.otpCode.create({
     data: {
@@ -298,7 +330,7 @@ export const forgotPassword = async (dto: ForgotPasswordDto): Promise<void> => {
 
   // Fix: fire-and-forget — OTP is saved, don't crash if email provider is down
   sendOtpEmail(user.email, user.fullName, otp, "reset-password").catch(
-    (err) => {},
+    (err) => logger.error("Forgot-password OTP email failed", { err, userId: user.id }),
   );
 };
 
@@ -358,6 +390,8 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   const user = await prisma.user.findUnique({ where: { email: dto.email } });
   if (!user) return;
 
+  await _enforceOtpResendCooldown(user.id, dto.purpose);
+
   await prisma.otpCode.updateMany({
     where: { userId: user.id, used: false, purpose: dto.purpose },
     data: { used: true },
@@ -375,7 +409,13 @@ export const resendCode = async (dto: ForgotPasswordDto): Promise<void> => {
   });
 
   // Fix: fire-and-forget — new OTP is saved, don't crash if email provider is down
-  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) => {});
+  sendOtpEmail(user.email, user.fullName, otp, dto.purpose).catch((err) =>
+    logger.error("Resend-code OTP email failed", {
+      err,
+      userId: user.id,
+      purpose: dto.purpose,
+    }),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -387,7 +427,9 @@ export const signOut = async (
   refreshToken?: string,
 ): Promise<void> => {
   if (refreshToken) {
-    await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
+    await prisma.refreshToken.deleteMany({
+      where: { token: sha256Hex(refreshToken) },
+    });
   } else {
     await prisma.refreshToken.deleteMany({ where: { userId } });
   }
@@ -422,9 +464,13 @@ const _createSession = async (
   const refreshExpiry = new Date();
   refreshExpiry.setDate(refreshExpiry.getDate() + 30);
 
+  // Store a SHA-256 hash of the refresh token, not the raw value — a DB leak
+  // (backup, read replica, injection) no longer hands out live sessions.
+  // The raw token is still what's returned to the client and used for
+  // lookup/rotation (refreshTokens, signOut hash it the same way).
   await prisma.refreshToken.create({
     data: {
-      token: tokenPair.refreshToken,
+      token: sha256Hex(tokenPair.refreshToken),
       userId,
       expiresAt: refreshExpiry,
     },

@@ -6,10 +6,14 @@ import { PaginationQuery } from "../../types";
 import { parsePagination, buildMeta } from "../../utils";
 import { seedBadgeForAllVendors, evaluateAllVendorsForBadge } from "../badgeEvaluation.service";
 
+// Deliberately un-paginated: this is admin-managed content (realistically a
+// handful of badges), rendered as a full card grid, not a data table.
+// `take` is only a safety cap, not real pagination.
 export const listBadges = () =>
   prisma.badge.findMany({
     orderBy: { name: "asc" },
     include: { requirements: true },
+    take: 200,
   });
 
 export const getBadgeById = async (id: string) => {

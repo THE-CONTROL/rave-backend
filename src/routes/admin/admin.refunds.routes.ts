@@ -2,6 +2,7 @@
 import { Router } from "express";
 import * as ctrl from "../../controllers/admin/refundAdmin.controller";
 import { requireAdminRole } from "../../middleware/requireAdminRole";
+import { sensitiveActionLimiter } from "../../middleware/sensitiveActionLimiter";
 import { validate } from "../../middleware/validate";
 import { adminDeclineRefundSchema } from "../../validators";
 
@@ -11,7 +12,7 @@ router.use(requireAdminRole("super_admin", "finance"));
 
 router.get("/", ctrl.listAllRefunds);
 router.get("/:id", ctrl.getRefundDetail);
-router.post("/:id/approve", ctrl.forceApproveRefund);
-router.post("/:id/decline", validate(adminDeclineRefundSchema), ctrl.forceDeclineRefund);
+router.post("/:id/approve", sensitiveActionLimiter, ctrl.forceApproveRefund);
+router.post("/:id/decline", sensitiveActionLimiter, validate(adminDeclineRefundSchema), ctrl.forceDeclineRefund);
 
 export default router;

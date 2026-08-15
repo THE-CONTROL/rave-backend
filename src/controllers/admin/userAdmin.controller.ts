@@ -32,6 +32,24 @@ export const listUserNotifications = asyncHandler(async (req: Request, res: Resp
   ok(res, notifications, "Success", meta);
 });
 
+export const listUserSearchHistory = asyncHandler(async (req: Request, res: Response) => {
+  const { searches, meta } = await userAdminService.listUserSearchHistory(
+    req.params.id,
+    extractPagination(req.query),
+  );
+  ok(res, searches, "Success", meta);
+});
+
+export const listUserCart = asyncHandler(async (req: Request, res: Response) => {
+  const { items, meta } = await userAdminService.listUserCart(req.params.id, extractPagination(req.query));
+  ok(res, items, "Success", meta);
+});
+
+export const listUserFavorites = asyncHandler(async (req: Request, res: Response) => {
+  const favorites = await userAdminService.listUserFavorites(req.params.id, extractPagination(req.query));
+  ok(res, favorites);
+});
+
 export const suspendUser = asyncHandler(async (req: Request, res: Response) => {
   const actor = (req as AuthenticatedRequest).user;
   const updated = await userAdminService.suspendUser(req.params.id, req.body?.reason, actor.id);

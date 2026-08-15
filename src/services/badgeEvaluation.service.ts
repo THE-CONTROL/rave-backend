@@ -57,30 +57,56 @@ export const evaluateVendorBadges = async (vendorId: string): Promise<void> => {
     include: { badge: { include: { requirements: true } } },
   });
 
+  if (vendorBadges.length === 0) return;
+
+  // computeMetricValue(vendorId, metric) only depends on the metric type, not
+  // on which badge/requirement is asking — so a vendor tracking several
+  // badges that each gate on, say, total_orders was previously re-running
+  // the identical total_orders query once per requirement per badge. Collect
+  // every distinct metric type actually needed across all not-yet-unlocked
+  // badges up front, fetch each ONCE, and have every requirement below reuse
+  // that shared value instead of re-querying.
+  const neededMetrics = new Set<BadgeMetric>();
   for (const vb of vendorBadges) {
-    const requirements = vb.badge.requirements;
-    if (requirements.length === 0) continue;
-
-    const progress = await Promise.all(
-      requirements.map(async (req) => {
-        const target = req.total ?? 0;
-        const value = await computeMetricValue(vendorId, req.metric);
-        return { value, target, ratio: target > 0 ? value / target : 1 };
-      }),
-    );
-
-    const allMet = progress.every((p) => p.ratio >= 1);
-    const bottleneck = progress.reduce((min, p) => (p.ratio < min.ratio ? p : min));
-
-    await prisma.vendorBadge.update({
-      where: { id: vb.id },
-      data: {
-        current: bottleneck.value,
-        state: allMet ? "unlocked" : "in_progress",
-        ...(allMet ? { earnedAt: new Date() } : {}),
-      },
-    });
+    for (const req of vb.badge.requirements) {
+      neededMetrics.add(req.metric);
+    }
   }
+
+  const metricEntries = await Promise.all(
+    Array.from(neededMetrics).map(
+      async (metric): Promise<[BadgeMetric, number]> => [
+        metric,
+        await computeMetricValue(vendorId, metric),
+      ],
+    ),
+  );
+  const metricValues = new Map(metricEntries);
+
+  await Promise.all(
+    vendorBadges.map(async (vb) => {
+      const requirements = vb.badge.requirements;
+      if (requirements.length === 0) return;
+
+      const progress = requirements.map((req) => {
+        const target = req.total ?? 0;
+        const value = metricValues.get(req.metric) ?? 0;
+        return { value, target, ratio: target > 0 ? value / target : 1 };
+      });
+
+      const allMet = progress.every((p) => p.ratio >= 1);
+      const bottleneck = progress.reduce((min, p) => (p.ratio < min.ratio ? p : min));
+
+      await prisma.vendorBadge.update({
+        where: { id: vb.id },
+        data: {
+          current: bottleneck.value,
+          state: allMet ? "unlocked" : "in_progress",
+          ...(allMet ? { earnedAt: new Date() } : {}),
+        },
+      });
+    }),
+  );
 };
 
 /** Called when a new badge is created — gives every existing vendor a row

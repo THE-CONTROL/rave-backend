@@ -5,13 +5,14 @@ import { extractPagination } from "../../types";
 import { ok, asyncHandler } from "../../utils";
 
 export const listDeliveries = asyncHandler(async (req: Request, res: Response) => {
-  const { status, riderId, from, to } = req.query;
+  const { status, riderId, from, to, search } = req.query;
   const { deliveries, meta } = await deliveryAdminService.listDeliveries({
     ...extractPagination(req.query),
     status: status as any,
     riderId: riderId as string | undefined,
     from: from as string | undefined,
     to: to as string | undefined,
+    search: search as string | undefined,
   });
   ok(res, deliveries, "Success", meta);
 });

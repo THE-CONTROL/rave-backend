@@ -5,6 +5,7 @@ import { ok, asyncHandler, created } from "../utils";
 import * as paymentService from "../services/payment.service";
 import * as userService from "../services/user.service";
 import { AuthenticatedRequest } from "../types";
+import { config } from "../config";
 
 const uid = (req: Request) => (req as AuthenticatedRequest).user.id;
 
@@ -125,7 +126,7 @@ function buildClosePage(): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
-  const secret = process.env.PAYSTACK_SECRET_KEY ?? "";
+  const secret = config.paystackSecretKey;
   // Hash the exact raw bytes Paystack sent (captured by the express.json
   // `verify` callback in app.ts) — re-serializing the parsed body isn't
   // guaranteed byte-identical and can make valid signatures fail to match.

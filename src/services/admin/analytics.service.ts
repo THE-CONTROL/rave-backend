@@ -1,5 +1,6 @@
 // src/services/admin/analytics.service.ts
 import { prisma } from "../../config/database";
+import { Prisma } from "@prisma/client";
 import { resolveDateRange } from "../../utils";
 
 const rangeSince = (range?: string): Date => {
@@ -242,6 +243,118 @@ export const getTopRiders = async (range?: string, limit = 10) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // User engagement
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operations — cross-model rollups otherwise only visible by drilling into
+// each entity's own list page (refunds, transactions, reviews, referrals,
+// badges, issues, deliveries, ads).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getOperationsSummary = async (range?: string) => {
+  const dateFilter = resolveDateRange(range);
+
+  // Delivered-count and average-duration used to be computed by pulling
+  // EVERY delivered delivery row for the range into memory (findMany, then
+  // JS reduce) just to average two timestamp fields. That's unbounded — as
+  // deliveries accumulate this both grows memory usage without limit and
+  // gets slower every month. A single SQL aggregate does the same
+  // computation (and the count) inside Postgres instead.
+  const sinceDate = dateFilter.createdAt?.gte;
+  const deliveryDurationAgg = await prisma.$queryRaw<
+    { avg_minutes: number | null; delivered_count: bigint }[]
+  >(
+    sinceDate
+      ? Prisma.sql`
+          SELECT
+            AVG(EXTRACT(EPOCH FROM ("deliveredAt" - "acceptedAt")) / 60.0) AS avg_minutes,
+            COUNT(*) AS delivered_count
+          FROM "deliveries"
+          WHERE "status" = 'delivered'
+            AND "acceptedAt" IS NOT NULL
+            AND "deliveredAt" IS NOT NULL
+            AND "createdAt" >= ${sinceDate}
+        `
+      : Prisma.sql`
+          SELECT
+            AVG(EXTRACT(EPOCH FROM ("deliveredAt" - "acceptedAt")) / 60.0) AS avg_minutes,
+            COUNT(*) AS delivered_count
+          FROM "deliveries"
+          WHERE "status" = 'delivered'
+            AND "acceptedAt" IS NOT NULL
+            AND "deliveredAt" IS NOT NULL
+        `,
+  );
+  const avgDeliveryMinutes = deliveryDurationAgg[0]?.avg_minutes ?? 0;
+  const deliveredCount = Number(deliveryDurationAgg[0]?.delivered_count ?? 0n);
+
+  const [
+    refundsByStatus,
+    refundsPaidSum,
+    transactionsByType,
+    reviewAgg,
+    referralTotal,
+    referralSuccessful,
+    badgesByState,
+    issuesByCategory,
+    cancelledDeliveries,
+    adEventsByType,
+  ] = await Promise.all([
+    prisma.refundRequest.groupBy({ by: ["status"], where: dateFilter, _count: true }),
+    prisma.refundRequest.aggregate({
+      where: { ...dateFilter, status: "REFUNDED" },
+      _sum: { amountApproved: true },
+    }),
+    prisma.transaction.groupBy({ by: ["type"], where: dateFilter, _count: true, _sum: { amount: true } }),
+    prisma.review.aggregate({
+      where: dateFilter,
+      _avg: { restaurantRating: true, foodRating: true, overallRating: true },
+      _count: true,
+    }),
+    prisma.referral.count({ where: dateFilter }),
+    prisma.referral.count({ where: { ...dateFilter, status: "successful" } }),
+    prisma.vendorBadge.groupBy({ by: ["state"], _count: true }),
+    prisma.reportedIssue.groupBy({
+      by: ["category"],
+      where: { ...dateFilter, status: { not: "RESOLVED" } },
+      _count: { category: true },
+      orderBy: { _count: { category: "desc" } },
+      take: 5,
+    }),
+    prisma.delivery.count({ where: { ...dateFilter, status: "cancelled" } }),
+    prisma.adEvent.groupBy({ by: ["event"], where: dateFilter, _count: true }),
+  ]);
+
+  return {
+    refunds: {
+      byStatus: refundsByStatus.map((r) => ({ status: r.status, count: r._count })),
+      totalPaid: refundsPaidSum._sum.amountApproved ?? 0,
+    },
+    transactionsByType: transactionsByType.map((t) => ({
+      type: t.type,
+      count: t._count,
+      total: t._sum.amount ?? 0,
+    })),
+    reviews: {
+      averageRestaurantRating: reviewAgg._avg.restaurantRating ?? 0,
+      averageFoodRating: reviewAgg._avg.foodRating ?? 0,
+      averageOverallRating: reviewAgg._avg.overallRating ?? 0,
+      count: reviewAgg._count,
+    },
+    referrals: {
+      total: referralTotal,
+      successful: referralSuccessful,
+      conversionRate: referralTotal > 0 ? referralSuccessful / referralTotal : 0,
+    },
+    badges: badgesByState.map((b) => ({ state: b.state, count: b._count })),
+    issues: issuesByCategory.map((i) => ({ category: i.category, count: i._count.category })),
+    deliveries: {
+      averageMinutes: avgDeliveryMinutes,
+      delivered: deliveredCount,
+      cancelled: cancelledDeliveries,
+    },
+    ads: adEventsByType.map((a) => ({ event: a.event, count: a._count })),
+  };
+};
 
 export const getUserEngagement = async (range?: string) => {
   const dateFilter = resolveDateRange(range);

@@ -3,8 +3,9 @@ import { RiderStatus } from "@prisma/client";
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/AppError";
 import { PaginationQuery } from "../../types";
-import { parsePagination, buildMeta } from "../../utils";
+import { parsePagination, buildMeta, maskAccountNumber } from "../../utils";
 import { notifyRiderStatusChanged } from "../../events/notification.events";
+import { decrypt } from "../../utils/crypto";
 
 export interface ListRidersQuery extends PaginationQuery {
   status?: RiderStatus;
@@ -56,7 +57,15 @@ export const getRiderDetail = async (riderId: string) => {
     },
   });
   if (!rider) throw AppError.notFound("Rider");
-  return rider;
+
+  // Mask the account number — bankAccounts.accountNumber is stored encrypted;
+  // never send the raw decrypted value (or, worse, raw ciphertext) to a client.
+  const bankAccounts = rider.bankAccounts.map((b) => ({
+    ...b,
+    accountNumber: maskAccountNumber(decrypt(b.accountNumber)),
+  }));
+
+  return { ...rider, bankAccounts };
 };
 
 const _requireRider = async (riderId: string) => {

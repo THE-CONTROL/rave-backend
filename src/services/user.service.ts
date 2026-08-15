@@ -13,7 +13,7 @@ import { UserNotificationSettingsPayload } from "../types/notifications";
 import { cfg } from "./config.service";
 import * as notif from "../events/notification.events";
 import * as paymentService from "../services/payment.service";
-import { PaymentMethod } from "@prisma/client";
+import { PaymentMethod, Prisma } from "@prisma/client";
 import { evaluateVendorBadges } from "./badgeEvaluation.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -792,40 +792,64 @@ export const createOrder = async (
   const arrivalTime = new Date();
   arrivalTime.setMinutes(arrivalTime.getMinutes() + etaMinutes);
 
-  const order = await prisma.order.create({
-    data: {
-      userId,
-      vendorId,
-      totalAmount: summary.total,
-      deliveryFee: summary.deliveryFee || 0,
-      vat: summary.vat || 0,
-      serviceFee: summary.serviceFee || 0,
-      // Combine auto-promo (per item) + code-promo (cart level) into the
-      // single discountAmount column the order detail screens read.
-      discountAmount:
-        (summary.discountAmount || 0) + (summary.promoDiscount || 0),
-      promoCode: summary.promoCode ?? null,
-      paymentMethod: dto.paymentMethod as PaymentMethod,
-      status: initialStatus,
-      estimatedArrival: arrivalTime,
-      etaDuration: etaMinutes,
-      evidenceUrl: dto.reference, // ← Paystack reference as evidence
-      deliveryAddress: loc.description,
-      deliveryLat: loc.latitude,
-      deliveryLng: loc.longitude,
-      deliveryInstructions: dto.instructions ?? loc.instructions,
-      contactMethod: dto.contactMethod ?? "in-app",
-      items: {
-        create: items.map((item) => ({
-          menuItemId: item.menuItem.id,
-          name: item.menuItem.name,
-          qty: item.qty,
-          price: item.currentPrice,
-          extras: item.extras ?? [],
-        })),
+  let order;
+  try {
+    order = await prisma.order.create({
+      data: {
+        userId,
+        vendorId,
+        totalAmount: summary.total,
+        deliveryFee: summary.deliveryFee || 0,
+        vat: summary.vat || 0,
+        serviceFee: summary.serviceFee || 0,
+        // Combine auto-promo (per item) + code-promo (cart level) into the
+        // single discountAmount column the order detail screens read.
+        discountAmount:
+          (summary.discountAmount || 0) + (summary.promoDiscount || 0),
+        promoCode: summary.promoCode ?? null,
+        paymentMethod: dto.paymentMethod as PaymentMethod,
+        status: initialStatus,
+        estimatedArrival: arrivalTime,
+        etaDuration: etaMinutes,
+        evidenceUrl: dto.reference, // ← Paystack reference as evidence
+        deliveryAddress: loc.description,
+        deliveryLat: loc.latitude,
+        deliveryLng: loc.longitude,
+        deliveryInstructions: dto.instructions ?? loc.instructions,
+        contactMethod: dto.contactMethod ?? "in-app",
+        items: {
+          create: items.map((item) => ({
+            menuItemId: item.menuItem.id,
+            name: item.menuItem.name,
+            qty: item.qty,
+            price: item.currentPrice,
+            extras: item.extras ?? [],
+          })),
+        },
       },
-    },
-  });
+    });
+  } catch (err) {
+    // Belt-and-suspenders against the earlier findFirst check-then-act race:
+    // `evidenceUrl` is now DB-unique (see migration
+    // 20260815153900_add_order_evidence_url_unique), so a genuinely
+    // concurrent call for the same payment reference loses here instead of
+    // creating a second order. Treat that as success — the winning caller's
+    // order is the order — rather than surfacing a raw conflict to the
+    // client that already paid.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const existing = await prisma.order.findFirst({
+        where: { evidenceUrl: dto.reference },
+        select: { orderId: true },
+      });
+      if (existing) {
+        return { orderId: existing.orderId };
+      }
+    }
+    throw err;
+  }
 
   // ── Mark promo usage + clear the applied code now that it's consumed ───────
   if (summary.promoCode) {
@@ -1505,6 +1529,18 @@ export const requestRefund = async (
     where: { id: data.orderId, userId },
   });
   if (!order) throw AppError.notFound("Order");
+
+  // Never allow a refund request for more than the customer actually paid.
+  // The cumulative-across-multiple-requests cap is enforced at approval time
+  // (processRefundApproval, in refundProcessing.service.ts), which is the
+  // point money actually leaves — but rejecting an obviously-too-large ask
+  // here too avoids creating requests that can never legitimately be
+  // approved.
+  if (data.amountRequested > order.totalAmount) {
+    throw AppError.badRequest(
+      "Refund amount cannot exceed the order total.",
+    );
+  }
 
   const refund = await prisma.refundRequest.create({
     data: {
